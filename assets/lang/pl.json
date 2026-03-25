@@ -1,0 +1,10 @@
+{
+  "start": "Dotknij aby rozpocząć",
+  "search": "Wyszukaj produkt...",
+  "cart": "Koszyk",
+  "total": "Suma koszyka",
+  "add": "Dodaj",
+  "cancel": "Anuluj",
+  "quantity_weight": "Waga (kg)",
+  "quantity_count": "Ilość (szt)"
+}

@@ -1,0 +1,10 @@
+{
+  "start": "Tap to start",
+  "search": "Search product...",
+  "cart": "Cart",
+  "total": "Total",
+  "add": "Add",
+  "cancel": "Cancel",
+  "quantity_weight": "Weight (kg)",
+  "quantity_count": "Quantity (pcs)"
+}
