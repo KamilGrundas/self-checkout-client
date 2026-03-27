@@ -2,9 +2,14 @@
   "start": "Tap to start",
   "search": "Search product...",
   "cart": "Cart",
+  "cart_empty": "Cart is empty",
   "total": "Total",
+  "pay": "Pay",
   "add": "Add",
   "cancel": "Cancel",
+  "loading_products": "Loading products...",
+  "measuring_weight": "Waiting for scale...",
+  "no_products": "No products to display",
   "quantity_weight": "Weight (kg)",
   "quantity_count": "Quantity (pcs)"
 }
