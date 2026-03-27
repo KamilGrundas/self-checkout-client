@@ -1,6 +1,6 @@
 {
   "start": "Dotknij aby rozpocząć",
-  "search": "Wyszukaj produkt...",
+  "all": "Wszystkie",
   "cart": "Koszyk",
   "cart_empty": "Koszyk jest pusty",
   "total": "Suma koszyka",
@@ -10,6 +10,9 @@
   "loading_products": "Ladowanie produktow...",
   "measuring_weight": "Oczekiwanie na wage...",
   "no_products": "Brak produktow do wyswietlenia",
+  "category_other": "Inne",
   "quantity_weight": "Waga (kg)",
-  "quantity_count": "Ilość (szt)"
+  "quantity_count": "Ilość (szt)",
+  "quantity_invalid_weight": "Podaj poprawną wagę",
+  "quantity_invalid_count": "Podaj poprawną ilość sztuk"
 }

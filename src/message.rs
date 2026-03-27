@@ -6,7 +6,7 @@ pub enum Message {
     StartPressed,
     RetryConnectionPressed,
     ProductSelected(String),
-    SearchChanged(String),
+    CategorySelected(String),
     QuantityChanged(String),
     KeypadPressed(char),
     KeypadClear,
@@ -18,9 +18,13 @@ pub enum Message {
         result: Result<ProductImage, String>,
     },
     WeightMeasured(f64),
-    ConnectionFinished(Result<(Vec<Product>, CheckoutSession), String>),
-    RecoveryFinished(Result<(Vec<Product>, CheckoutSession), String>),
+    ConnectionFinished(
+        Result<(Vec<Product>, Vec<crate::product::Category>, CheckoutSession), String>,
+    ),
+    RecoveryFinished(
+        Result<(Vec<Product>, Vec<crate::product::Category>, CheckoutSession), String>,
+    ),
     CartSynced(Result<CheckoutSession, String>),
     PayPressed,
-    PaymentFinished(Result<(Vec<Product>, CheckoutSession), String>),
+    PaymentFinished(Result<(Vec<Product>, Vec<crate::product::Category>, CheckoutSession), String>),
 }

@@ -1,7 +1,11 @@
 use crate::checkout::CartItem;
 use crate::i18n::I18n;
 use crate::message::Message;
-use crate::product::{Product, ProductImage};
+use crate::product::{Category, Product, ProductImage};
+use crate::ui::{
+    floating_panel_style, primary_button_disabled_style, primary_button_selected_style,
+    primary_button_style, scrollable_style,
+};
 use iced::widget::{
     button, column, container, image, opaque, row, scrollable, stack, text, text_input,
 };
@@ -10,7 +14,8 @@ use std::collections::HashMap;
 
 pub fn session_view<'a>(
     i18n: &'a I18n,
-    search: &'a str,
+    categories: &'a [Category],
+    selected_category_key: &'a str,
     products: &'a [Product],
     product_images: &'a HashMap<String, ProductImage>,
     cart: &'a [CartItem],
@@ -24,11 +29,14 @@ pub fn session_view<'a>(
     connection_status: &'a str,
     manual_reconnect_available: bool,
 ) -> Element<'a, Message> {
-    let query = search.to_lowercase();
     let filtered_products: Vec<&Product> = products
         .iter()
-        .filter(|product| product.name.to_lowercase().contains(&query))
+        .filter(|product| {
+            selected_category_key == "all" || product.category_key == selected_category_key
+        })
         .collect();
+
+    let category_buttons = category_filter_row(i18n, categories, selected_category_key);
 
     let mut products_list = column![].spacing(8).width(Length::Fill);
 
@@ -52,20 +60,13 @@ pub fn session_view<'a>(
                 };
 
             let tile = button(
-                container(
-                    column![
-                        image_content,
-                        text(&product.name),
-                        text(&product.unit),
-                        text(format!("{:.2}", product.price)),
-                    ]
-                    .spacing(8),
-                )
-                .padding(10)
-                .width(Length::Fill)
-                .height(Length::Fixed(220.0)),
+                container(column![image_content, text(&product.name),].spacing(8))
+                    .padding(10)
+                    .width(Length::Fill)
+                    .height(Length::Fixed(220.0)),
             )
             .width(Length::FillPortion(1))
+            .style(primary_button_style)
             .on_press(Message::ProductSelected(product.id.clone()));
 
             tiles_row = tiles_row.push(tile);
@@ -84,22 +85,41 @@ pub fn session_view<'a>(
         products_list = products_list.push(text(i18n.t("no_products")));
     }
 
-    let left_panel = column![
-        text_input(i18n.t("search").as_str(), search).on_input(Message::SearchChanged),
-        scrollable(products_list).width(Length::Fill).height(Length::Fill)
-    ]
+    let left_panel = container(
+        column![
+            category_buttons,
+            container(
+                scrollable(products_list)
+                    .direction(scrollable::Direction::Vertical(
+                        scrollable::Scrollbar::new()
+                            .width(12)
+                            .margin(2)
+                            .scroller_width(12)
+                            .spacing(14),
+                    ))
+                    .style(scrollable_style)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .width(Length::Fill)
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .spacing(10),
+    )
     .width(Length::Fill)
     .height(Length::Fill)
-    .spacing(10)
-    .padding(10);
+    .padding(16)
+    .style(floating_panel_style);
 
-    let mut cart_list = column![text(i18n.t("cart"))].spacing(8);
+    let cart_header = text(i18n.t("cart")).size(30);
+    let mut cart_items = column![].spacing(8).width(Length::Fill);
 
     if cart.is_empty() {
-        cart_list = cart_list.push(text(i18n.t("cart_empty")));
+        cart_items = cart_items.push(text(i18n.t("cart_empty")));
     } else {
         for item in cart {
-            cart_list = cart_list.push(
+            cart_items = cart_items.push(
                 column![
                     text(format!("{} ({})", item.name, item.quantity_label)),
                     text(format!(
@@ -113,19 +133,69 @@ pub fn session_view<'a>(
     }
 
     let total: f64 = cart.iter().map(|item| item.line_total).sum();
-    cart_list = cart_list.push(text(format!("{}: {:.2}", i18n.t("total"), total)).size(24));
-    if can_pay {
-        cart_list = cart_list.push(button(text(i18n.t("pay"))).on_press(Message::PayPressed));
-    }
+    let total_display = if total.abs() < 0.005 { 0.0 } else { total };
 
-    let right_panel = container(scrollable(cart_list).height(Length::Fill)).padding(10);
+    let pay_button = {
+        let button = button(
+            container(text(i18n.t("pay")).size(28))
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+        )
+        .padding([14, 18])
+        .width(Length::Fill)
+        .style(if can_pay {
+            primary_button_style
+        } else {
+            primary_button_disabled_style
+        });
 
-    let content: Element<'_, Message> = column![row![
-        container(left_panel).width(Length::FillPortion(3)),
-        container(right_panel).width(Length::FillPortion(1))
+        if can_pay {
+            button.on_press(Message::PayPressed)
+        } else {
+            button
+        }
+    };
+
+    let cart_footer = column![
+        text(format!("{}: {:.2}", i18n.t("total"), total_display)).size(24),
+        pay_button,
     ]
-    .width(Length::Fill)
-    .height(Length::Fill)]
+    .spacing(12);
+
+    let right_panel = container(
+        column![
+            cart_header,
+            container(
+                scrollable(cart_items)
+                    .direction(scrollable::Direction::Vertical(
+                        scrollable::Scrollbar::new()
+                            .width(12)
+                            .margin(2)
+                            .scroller_width(12)
+                            .spacing(10),
+                    ))
+                    .style(scrollable_style)
+                    .height(Length::Fill)
+                    .width(Length::Fill),
+            )
+            .width(Length::Fill),
+            container(cart_footer).width(Length::Fill)
+        ]
+        .height(Length::Fill)
+        .spacing(12),
+    )
+    .padding(16)
+    .style(floating_panel_style);
+
+    let content: Element<'_, Message> = column![
+        row![
+            container(left_panel).width(Length::FillPortion(3)),
+            container(right_panel).width(Length::FillPortion(1))
+        ]
+        .spacing(16)
+        .width(Length::Fill)
+        .height(Length::Fill)
+    ]
     .height(Length::Fill)
     .into();
 
@@ -155,6 +225,57 @@ pub fn session_view<'a>(
     }
 }
 
+fn category_filter_row<'a>(
+    i18n: &'a I18n,
+    categories: &'a [Category],
+    selected_category_key: &'a str,
+) -> Element<'a, Message> {
+    let mut buttons = row![].spacing(8).width(Length::Fill);
+
+    buttons = buttons.push(category_button(i18n.t("all"), "all", selected_category_key));
+
+    for category in categories.iter().filter(|category| category.key != "other") {
+        buttons = buttons.push(category_button(
+            category.name.clone(),
+            &category.key,
+            selected_category_key,
+        ));
+    }
+
+    buttons = buttons.push(category_button(
+        i18n.t("category_other"),
+        "other",
+        selected_category_key,
+    ));
+
+    scrollable(buttons)
+        .direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::new()
+                .width(10)
+                .margin(2)
+                .scroller_width(10)
+                .spacing(10),
+        ))
+        .style(scrollable_style)
+        .height(Length::Shrink)
+        .into()
+}
+
+fn category_button<'a>(
+    label: String,
+    key: &str,
+    selected_category_key: &str,
+) -> Element<'a, Message> {
+    button(text(label))
+        .style(if key == selected_category_key {
+            primary_button_selected_style
+        } else {
+            primary_button_style
+        })
+        .on_press(Message::CategorySelected(key.to_string()))
+        .into()
+}
+
 fn modal_view<'a>(
     i18n: &'a I18n,
     base: Element<'a, Message>,
@@ -165,27 +286,61 @@ fn modal_view<'a>(
 ) -> Element<'a, Message> {
     let keypad = column![
         row![
-            button("1").on_press(Message::KeypadPressed('1')).width(Length::Fill),
-            button("2").on_press(Message::KeypadPressed('2')).width(Length::Fill),
-            button("3").on_press(Message::KeypadPressed('3')).width(Length::Fill),
+            button("1")
+                .style(primary_button_style)
+                .on_press(Message::KeypadPressed('1'))
+                .width(Length::Fill),
+            button("2")
+                .style(primary_button_style)
+                .on_press(Message::KeypadPressed('2'))
+                .width(Length::Fill),
+            button("3")
+                .style(primary_button_style)
+                .on_press(Message::KeypadPressed('3'))
+                .width(Length::Fill),
         ]
         .spacing(8),
         row![
-            button("4").on_press(Message::KeypadPressed('4')).width(Length::Fill),
-            button("5").on_press(Message::KeypadPressed('5')).width(Length::Fill),
-            button("6").on_press(Message::KeypadPressed('6')).width(Length::Fill),
+            button("4")
+                .style(primary_button_style)
+                .on_press(Message::KeypadPressed('4'))
+                .width(Length::Fill),
+            button("5")
+                .style(primary_button_style)
+                .on_press(Message::KeypadPressed('5'))
+                .width(Length::Fill),
+            button("6")
+                .style(primary_button_style)
+                .on_press(Message::KeypadPressed('6'))
+                .width(Length::Fill),
         ]
         .spacing(8),
         row![
-            button("7").on_press(Message::KeypadPressed('7')).width(Length::Fill),
-            button("8").on_press(Message::KeypadPressed('8')).width(Length::Fill),
-            button("9").on_press(Message::KeypadPressed('9')).width(Length::Fill),
+            button("7")
+                .style(primary_button_style)
+                .on_press(Message::KeypadPressed('7'))
+                .width(Length::Fill),
+            button("8")
+                .style(primary_button_style)
+                .on_press(Message::KeypadPressed('8'))
+                .width(Length::Fill),
+            button("9")
+                .style(primary_button_style)
+                .on_press(Message::KeypadPressed('9'))
+                .width(Length::Fill),
         ]
         .spacing(8),
         row![
-            button("C").on_press(Message::KeypadClear).width(Length::Fill),
-            button("0").on_press(Message::KeypadPressed('0')).width(Length::Fill),
+            button("C")
+                .style(primary_button_style)
+                .on_press(Message::KeypadClear)
+                .width(Length::Fill),
+            button("0")
+                .style(primary_button_style)
+                .on_press(Message::KeypadPressed('0'))
+                .width(Length::Fill),
             button("⌫")
+                .style(primary_button_style)
                 .on_press(Message::KeypadBackspace)
                 .width(Length::Fill),
         ]
@@ -204,8 +359,12 @@ fn modal_view<'a>(
             text(format!("{} [{}]", product.name, product.unit)).size(28),
             text_input(i18n.t("quantity_weight").as_str(), quantity_input).size(28),
             row![
-                button(text(i18n.t("add"))).on_press(Message::ConfirmAddToCart),
-                button(text(i18n.t("cancel"))).on_press(Message::CancelAddToCart),
+                button(text(i18n.t("add")))
+                    .style(primary_button_style)
+                    .on_press(Message::ConfirmAddToCart),
+                button(text(i18n.t("cancel")))
+                    .style(primary_button_style)
+                    .on_press(Message::CancelAddToCart),
             ]
             .spacing(8),
         ]
@@ -218,8 +377,12 @@ fn modal_view<'a>(
                 .size(28),
             keypad,
             row![
-                button(text(i18n.t("add"))).on_press(Message::ConfirmAddToCart),
-                button(text(i18n.t("cancel"))).on_press(Message::CancelAddToCart),
+                button(text(i18n.t("add")))
+                    .style(primary_button_style)
+                    .on_press(Message::ConfirmAddToCart),
+                button(text(i18n.t("cancel")))
+                    .style(primary_button_style)
+                    .on_press(Message::CancelAddToCart),
             ]
             .spacing(8),
         ]
@@ -286,8 +449,11 @@ fn connection_overlay<'a>(
     .padding(16);
 
     if manual_reconnect_available {
-        modal_content =
-            modal_content.push(button(text("Retry connection")).on_press(Message::RetryConnectionPressed));
+        modal_content = modal_content.push(
+            button(text("Retry connection"))
+                .style(primary_button_style)
+                .on_press(Message::RetryConnectionPressed),
+        );
     }
 
     let modal = container(modal_content)

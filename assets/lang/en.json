@@ -1,6 +1,6 @@
 {
   "start": "Tap to start",
-  "search": "Search product...",
+  "all": "All",
   "cart": "Cart",
   "cart_empty": "Cart is empty",
   "total": "Total",
@@ -10,6 +10,9 @@
   "loading_products": "Loading products...",
   "measuring_weight": "Waiting for scale...",
   "no_products": "No products to display",
+  "category_other": "Other",
   "quantity_weight": "Weight (kg)",
-  "quantity_count": "Quantity (pcs)"
+  "quantity_count": "Quantity (pcs)",
+  "quantity_invalid_weight": "Enter a valid weight",
+  "quantity_invalid_count": "Enter a valid item quantity"
 }

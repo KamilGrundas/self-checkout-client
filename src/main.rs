@@ -2,12 +2,14 @@ mod checkout;
 mod i18n;
 mod message;
 mod product;
+mod ui;
 mod views;
 
 use crate::checkout::{CartItem, CheckoutSession, ConnectPayload, SyncCartPayload};
 use crate::i18n::I18n;
 use crate::message::Message;
-use crate::product::{Product, ProductImage, ProductsResponse};
+use crate::product::{CategoriesResponse, Category, Product, ProductImage, ProductsResponse};
+use crate::ui::primary_button_style;
 
 use iced::widget::{button, column, container, image, text};
 use iced::{Element, Length, Task, Theme, application};
@@ -44,9 +46,10 @@ struct SelfCheckout {
     counter_password: String,
     client_id: String,
     checkout_session: Option<CheckoutSession>,
+    categories: Vec<Category>,
     products: Vec<Product>,
     product_images: HashMap<String, ProductImage>,
-    search: String,
+    selected_category_key: String,
     status: String,
     loading_products: bool,
     cart: Vec<CartItem>,
@@ -79,9 +82,10 @@ impl SelfCheckout {
                 counter_password: counter_password.clone(),
                 client_id: client_id.clone(),
                 checkout_session: None,
+                categories: Vec::new(),
                 products: Vec::new(),
                 product_images: HashMap::new(),
-                search: String::new(),
+                selected_category_key: "all".to_string(),
                 status: "Connecting to backend...".to_string(),
                 loading_products: true,
                 cart: Vec::new(),
@@ -105,7 +109,7 @@ impl SelfCheckout {
 }
 
 fn app_theme(_: &SelfCheckout) -> Theme {
-    Theme::Dark
+    Theme::CatppuccinLatte
 }
 
 fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
@@ -133,11 +137,12 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             }
         }
         Message::ConnectionFinished(result) => match result {
-            Ok((products, checkout_session)) => {
+            Ok((products, categories, checkout_session)) => {
                 state.loading_products = false;
                 state.connection_failed = false;
                 state.manual_reconnect_available = false;
                 state.status = "Connected".to_string();
+                state.categories = categories;
                 state.products = products;
                 state.cart = checkout_session.cart.clone();
                 state.checkout_session = Some(checkout_session);
@@ -162,7 +167,8 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             }
         },
         Message::RecoveryFinished(result) => match result {
-            Ok((products, checkout_session)) => {
+            Ok((products, categories, checkout_session)) => {
+                state.categories = categories;
                 state.products = products;
                 state.cart = checkout_session.cart.clone();
                 state.checkout_session = Some(checkout_session);
@@ -184,7 +190,10 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 return Task::none();
             }
 
-            let Some(product) = state.products.iter().find(|product| product.id == product_id)
+            let Some(product) = state
+                .products
+                .iter()
+                .find(|product| product.id == product_id)
             else {
                 return Task::none();
             };
@@ -201,8 +210,8 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 Task::none()
             }
         }
-        Message::SearchChanged(value) => {
-            state.search = value;
+        Message::CategorySelected(category_key) => {
+            state.selected_category_key = category_key;
             Task::none()
         }
         Message::QuantityChanged(value) => {
@@ -242,7 +251,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 match state.quantity_input.trim().parse::<f64>() {
                     Ok(value) if value > 0.0 => value,
                     _ => {
-                        state.quantity_error = "Podaj poprawna wage".to_string();
+                        state.quantity_error = state.i18n.t("quantity_invalid_weight");
                         return Task::none();
                     }
                 }
@@ -250,7 +259,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 match state.quantity_input.trim().parse::<u32>() {
                     Ok(value) if value > 0 => value as f64,
                     _ => {
-                        state.quantity_error = "Podaj poprawna ilosc sztuk".to_string();
+                        state.quantity_error = state.i18n.t("quantity_invalid_count");
                         return Task::none();
                     }
                 }
@@ -325,11 +334,12 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             )
         }
         Message::PaymentFinished(result) => match result {
-            Ok((products, checkout_session)) => {
+            Ok((products, categories, checkout_session)) => {
+                state.categories = categories;
                 state.products = products;
                 state.checkout_session = Some(checkout_session);
                 state.cart.clear();
-                state.search.clear();
+                state.selected_category_key = "all".to_string();
                 state.selected_product = None;
                 state.quantity_input.clear();
                 state.quantity_error.clear();
@@ -356,7 +366,8 @@ fn view(state: &SelfCheckout) -> Element<'_, Message> {
         Screen::Welcome => welcome_view(&state.i18n),
         Screen::Session => session_view(
             &state.i18n,
-            &state.search,
+            &state.categories,
+            &state.selected_category_key,
             &state.products,
             &state.product_images,
             &state.cart,
@@ -380,8 +391,11 @@ fn connection_view(state: &SelfCheckout) -> Element<'_, Message> {
         .height(Length::Fill);
 
     if state.connection_failed {
-        content =
-            content.push(button(text("Retry connection")).on_press(Message::RetryConnectionPressed));
+        content = content.push(
+            button(text("Retry connection"))
+                .style(primary_button_style)
+                .on_press(Message::RetryConnectionPressed),
+        );
     } else {
         content = content.push(text("Trying 3 times with 3-second intervals..."));
     }
@@ -412,7 +426,7 @@ fn connect_task(
     counter_id: String,
     counter_password: String,
     client_id: String,
-    message: fn(Result<(Vec<Product>, CheckoutSession), String>) -> Message,
+    message: fn(Result<(Vec<Product>, Vec<Category>, CheckoutSession), String>) -> Message,
 ) -> Task<Message> {
     Task::perform(
         connect_backend(api_base_url, counter_id, counter_password, client_id),
@@ -474,7 +488,7 @@ async fn connect_backend(
     counter_id: String,
     counter_password: String,
     client_id: String,
-) -> Result<(Vec<Product>, CheckoutSession), String> {
+) -> Result<(Vec<Product>, Vec<Category>, CheckoutSession), String> {
     if counter_id.is_empty() || counter_password.is_empty() {
         return Err("Missing CHECKOUT_COUNTER_ID or CHECKOUT_COUNTER_PASSWORD".to_string());
     }
@@ -501,11 +515,12 @@ fn try_connect(
     counter_id: &str,
     counter_password: &str,
     client_id: &str,
-) -> Result<(Vec<Product>, CheckoutSession), String> {
+) -> Result<(Vec<Product>, Vec<Category>, CheckoutSession), String> {
     check_backend_health(api_base_url)?;
     let products = fetch_products_blocking(api_base_url)?;
+    let categories = fetch_categories_blocking(api_base_url)?;
     let checkout_session = connect_session(api_base_url, counter_id, counter_password, client_id)?;
-    Ok((products, checkout_session))
+    Ok((products, categories, checkout_session))
 }
 
 fn check_backend_health(api_base_url: &str) -> Result<(), String> {
@@ -578,7 +593,7 @@ async fn pay_and_reconnect(
     counter_password: String,
     client_id: String,
     session_id: String,
-) -> Result<(Vec<Product>, CheckoutSession), String> {
+) -> Result<(Vec<Product>, Vec<Category>, CheckoutSession), String> {
     let client = reqwest::blocking::Client::new();
     let payload = ConnectPayload {
         counter_id: counter_id.clone(),
@@ -605,6 +620,16 @@ fn fetch_products_blocking(api_base_url: &str) -> Result<Vec<Product>, String> {
         .json::<ProductsResponse>()
         .map(|response| response.data)
         .map_err(|error| format!("Failed to decode products: {error}"))
+}
+
+fn fetch_categories_blocking(api_base_url: &str) -> Result<Vec<Category>, String> {
+    reqwest::blocking::get(categories_url(api_base_url))
+        .map_err(|error| format!("Failed to fetch categories: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Failed to fetch categories: {error}"))?
+        .json::<CategoriesResponse>()
+        .map(|response| response.data)
+        .map_err(|error| format!("Failed to decode categories: {error}"))
 }
 
 async fn fetch_image(image_url: String) -> Result<ProductImage, String> {
@@ -644,6 +669,10 @@ fn products_url(api_base_url: &str) -> String {
     format!("{}/products/", api_v1_base(api_base_url))
 }
 
+fn categories_url(api_base_url: &str) -> String {
+    format!("{}/categories/", api_v1_base(api_base_url))
+}
+
 fn health_url(api_base_url: &str) -> String {
     format!("{}/utils/health-check/", api_v1_base(api_base_url))
 }
@@ -660,7 +689,10 @@ fn session_cart_url(api_base_url: &str, session_id: &str) -> String {
 }
 
 fn session_pay_url(api_base_url: &str, session_id: &str) -> String {
-    format!("{}/checkout-sessions/{session_id}/pay", api_v1_base(api_base_url))
+    format!(
+        "{}/checkout-sessions/{session_id}/pay",
+        api_v1_base(api_base_url)
+    )
 }
 
 fn load_or_create_client_id() -> String {
