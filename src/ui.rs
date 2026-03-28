@@ -50,6 +50,27 @@ const ACTION_BUTTON_HOVER_BG_COLOR: Color = Color {
     a: 1.0,
 };
 
+const DANGER_BUTTON_COLOR: Color = Color {
+    r: 0xC9 as f32 / 255.0,
+    g: 0x41 as f32 / 255.0,
+    b: 0x41 as f32 / 255.0,
+    a: 1.0,
+};
+
+const DANGER_BUTTON_HOVER_COLOR: Color = Color {
+    r: 0xAF as f32 / 255.0,
+    g: 0x38 as f32 / 255.0,
+    b: 0x38 as f32 / 255.0,
+    a: 1.0,
+};
+
+const KEYPAD_BUTTON_BORDER_COLOR: Color = Color {
+    r: 0xD8 as f32 / 255.0,
+    g: 0xE4 as f32 / 255.0,
+    b: 0xDF as f32 / 255.0,
+    a: 1.0,
+};
+
 const SCROLLBAR_BG_COLOR: Color = Color {
     r: 0xDE as f32 / 255.0,
     g: 0xE9 as f32 / 255.0,
@@ -141,6 +162,43 @@ pub fn action_button_style(_: &Theme, status: button::Status) -> button::Style {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.06),
             offset: Vector::new(0.0, 0.0),
             blur_radius: 14.0,
+        },
+        ..button::Style::default()
+    }
+}
+
+pub fn danger_button_style(_: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered => DANGER_BUTTON_HOVER_COLOR,
+        button::Status::Pressed => DANGER_BUTTON_HOVER_COLOR,
+        _ => DANGER_BUTTON_COLOR,
+    };
+
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: Color::WHITE,
+        border: border::rounded(12),
+        ..button::Style::default()
+    }
+}
+
+pub fn keypad_button_style(_: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered => ACTION_BUTTON_HOVER_BG_COLOR,
+        button::Status::Pressed => ACTION_BUTTON_HOVER_BG_COLOR,
+        _ => ACTION_BUTTON_BG_COLOR,
+    };
+
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: PRIMARY_BUTTON_SELECTED_COLOR,
+        border: border::rounded(18)
+            .width(1)
+            .color(KEYPAD_BUTTON_BORDER_COLOR),
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.05),
+            offset: Vector::new(0.0, 0.0),
+            blur_radius: 10.0,
         },
         ..button::Style::default()
     }

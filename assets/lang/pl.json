@@ -13,6 +13,8 @@
   "measuring_weight": "Oczekiwanie na wagę...",
   "no_products": "Brak produktów do wyświetlenia",
   "category_other": "Inne",
+  "unit_kg": "kg",
+  "unit_pcs": "szt",
   "quantity_weight": "Waga (kg)",
   "quantity_count": "Ilość (szt)",
   "quantity_invalid_weight": "Podaj poprawną wagę",

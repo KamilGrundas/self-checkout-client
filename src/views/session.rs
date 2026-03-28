@@ -3,8 +3,9 @@ use crate::i18n::I18n;
 use crate::message::Message;
 use crate::product::{Category, Product, ProductImage};
 use crate::ui::{
-    action_button_style, floating_panel_style, primary_button_disabled_style,
-    primary_button_selected_style, primary_button_style, scrollable_style,
+    action_button_style, danger_button_style, floating_panel_style, keypad_button_style,
+    primary_button_disabled_style, primary_button_selected_style, primary_button_style,
+    scrollable_style,
 };
 use iced::widget::{
     button, column, container, image, opaque, row, scrollable, stack, text, text_input,
@@ -353,109 +354,102 @@ fn modal_view<'a>(
     quantity_error: &'a str,
     measuring_weight: bool,
 ) -> Element<'a, Message> {
+    let unit_label = localized_unit(i18n, &product.unit);
+
     let keypad = column![
         row![
-            button("1")
-                .style(primary_button_style)
-                .on_press(Message::KeypadPressed('1'))
-                .width(Length::Fill),
-            button("2")
-                .style(primary_button_style)
-                .on_press(Message::KeypadPressed('2'))
-                .width(Length::Fill),
-            button("3")
-                .style(primary_button_style)
-                .on_press(Message::KeypadPressed('3'))
-                .width(Length::Fill),
+            keypad_button("1", Message::KeypadPressed('1')).width(Length::Fill),
+            keypad_button("2", Message::KeypadPressed('2')).width(Length::Fill),
+            keypad_button("3", Message::KeypadPressed('3')).width(Length::Fill),
         ]
         .spacing(8),
         row![
-            button("4")
-                .style(primary_button_style)
-                .on_press(Message::KeypadPressed('4'))
-                .width(Length::Fill),
-            button("5")
-                .style(primary_button_style)
-                .on_press(Message::KeypadPressed('5'))
-                .width(Length::Fill),
-            button("6")
-                .style(primary_button_style)
-                .on_press(Message::KeypadPressed('6'))
-                .width(Length::Fill),
+            keypad_button("4", Message::KeypadPressed('4')).width(Length::Fill),
+            keypad_button("5", Message::KeypadPressed('5')).width(Length::Fill),
+            keypad_button("6", Message::KeypadPressed('6')).width(Length::Fill),
         ]
         .spacing(8),
         row![
-            button("7")
-                .style(primary_button_style)
-                .on_press(Message::KeypadPressed('7'))
-                .width(Length::Fill),
-            button("8")
-                .style(primary_button_style)
-                .on_press(Message::KeypadPressed('8'))
-                .width(Length::Fill),
-            button("9")
-                .style(primary_button_style)
-                .on_press(Message::KeypadPressed('9'))
-                .width(Length::Fill),
+            keypad_button("7", Message::KeypadPressed('7')).width(Length::Fill),
+            keypad_button("8", Message::KeypadPressed('8')).width(Length::Fill),
+            keypad_button("9", Message::KeypadPressed('9')).width(Length::Fill),
         ]
         .spacing(8),
         row![
-            button("C")
-                .style(primary_button_style)
-                .on_press(Message::KeypadClear)
-                .width(Length::Fill),
-            button("0")
-                .style(primary_button_style)
-                .on_press(Message::KeypadPressed('0'))
-                .width(Length::Fill),
-            button("⌫")
-                .style(primary_button_style)
-                .on_press(Message::KeypadBackspace)
-                .width(Length::Fill),
+            keypad_button("C", Message::KeypadClear).width(Length::Fill),
+            keypad_button("0", Message::KeypadPressed('0')).width(Length::Fill),
+            keypad_button("⌫", Message::KeypadBackspace).width(Length::Fill),
         ]
         .spacing(8)
     ]
-    .spacing(8);
+    .spacing(12);
 
     let modal_body = if measuring_weight {
         column![
-            text(format!("{} [{}]", product.name, product.unit)).size(28),
-            text(i18n.t("measuring_weight")).size(24),
+            text(format!("{} [{}]", product.name, unit_label)).size(40),
+            text(i18n.t("measuring_weight")).size(30),
         ]
-        .spacing(12)
+        .spacing(20)
     } else if product.unit == "kg" {
         column![
-            text(format!("{} [{}]", product.name, product.unit)).size(28),
-            text_input(i18n.t("quantity_weight").as_str(), quantity_input).size(28),
+            text(format!("{} [{}]", product.name, unit_label)).size(40),
+            text_input(i18n.t("quantity_weight").as_str(), quantity_input)
+                .size(34)
+                .padding(18),
             row![
-                button(text(i18n.t("add")))
-                    .style(primary_button_style)
-                    .on_press(Message::ConfirmAddToCart),
-                button(text(i18n.t("cancel")))
-                    .style(primary_button_style)
-                    .on_press(Message::CancelAddToCart),
+                button(
+                    container(text(i18n.t("add")).size(24))
+                        .width(Length::Fill)
+                        .center_x(Length::Fill),
+                )
+                .style(primary_button_style)
+                .padding([22, 24])
+                .width(Length::Fill)
+                .on_press(Message::ConfirmAddToCart),
+                button(
+                    container(text(i18n.t("cancel")).size(24))
+                        .width(Length::Fill)
+                        .center_x(Length::Fill),
+                )
+                .style(danger_button_style)
+                .padding([22, 24])
+                .width(Length::Fill)
+                .on_press(Message::CancelAddToCart),
             ]
-            .spacing(8),
+            .spacing(12),
         ]
-        .spacing(12)
+        .spacing(20)
     } else {
         column![
-            text(format!("{} [{}]", product.name, product.unit)).size(28),
+            text(format!("{} [{}]", product.name, unit_label)).size(40),
             text_input(i18n.t("quantity_count").as_str(), quantity_input)
                 .on_input(Message::QuantityChanged)
-                .size(28),
+                .size(34)
+                .padding(18),
             keypad,
             row![
-                button(text(i18n.t("add")))
-                    .style(primary_button_style)
-                    .on_press(Message::ConfirmAddToCart),
-                button(text(i18n.t("cancel")))
-                    .style(primary_button_style)
-                    .on_press(Message::CancelAddToCart),
+                button(
+                    container(text(i18n.t("add")).size(24))
+                        .width(Length::Fill)
+                        .center_x(Length::Fill),
+                )
+                .style(primary_button_style)
+                .padding([22, 24])
+                .width(Length::Fill)
+                .on_press(Message::ConfirmAddToCart),
+                button(
+                    container(text(i18n.t("cancel")).size(24))
+                        .width(Length::Fill)
+                        .center_x(Length::Fill),
+                )
+                .style(danger_button_style)
+                .padding([22, 24])
+                .width(Length::Fill)
+                .on_press(Message::CancelAddToCart),
             ]
-            .spacing(8),
+            .spacing(12),
         ]
-        .spacing(12)
+        .spacing(20)
     };
 
     let modal_content = if quantity_error.is_empty() || measuring_weight {
@@ -472,8 +466,8 @@ fn modal_view<'a>(
                 .background(Color::from_rgba(0.0, 0.0, 0.0, 0.6))
         });
 
-    let modal = container(modal_content.padding(16))
-        .width(Length::Fixed(420.0))
+    let modal = container(modal_content.padding(24))
+        .width(Length::Fixed(560.0))
         .style(iced::widget::container::rounded_box);
 
     stack([
@@ -494,6 +488,27 @@ fn modal_view<'a>(
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+fn keypad_button<'a>(label: &'a str, message: Message) -> iced::widget::Button<'a, Message> {
+    button(
+        container(text(label).size(32))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .height(Length::Fixed(88.0))
+    .style(keypad_button_style)
+    .on_press(message)
+}
+
+fn localized_unit(i18n: &I18n, unit: &str) -> String {
+    match unit {
+        "pcs" => i18n.t("unit_pcs"),
+        "kg" => i18n.t("unit_kg"),
+        _ => unit.to_string(),
+    }
 }
 
 fn connection_overlay<'a>(

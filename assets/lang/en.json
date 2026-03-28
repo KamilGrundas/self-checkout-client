@@ -13,6 +13,8 @@
   "measuring_weight": "Waiting for scale...",
   "no_products": "No products to display",
   "category_other": "Other",
+  "unit_kg": "kg",
+  "unit_pcs": "pcs",
   "quantity_weight": "Weight (kg)",
   "quantity_count": "Quantity (pcs)",
   "quantity_invalid_weight": "Enter a valid weight",
