@@ -36,6 +36,20 @@ const PRIMARY_BUTTON_DISABLED_COLOR: Color = Color {
     a: 1.0,
 };
 
+const ACTION_BUTTON_BG_COLOR: Color = Color {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 1.0,
+};
+
+const ACTION_BUTTON_HOVER_BG_COLOR: Color = Color {
+    r: 0xF4 as f32 / 255.0,
+    g: 0xF8 as f32 / 255.0,
+    b: 0xF6 as f32 / 255.0,
+    a: 1.0,
+};
+
 const SCROLLBAR_BG_COLOR: Color = Color {
     r: 0xDE as f32 / 255.0,
     g: 0xE9 as f32 / 255.0,
@@ -106,6 +120,28 @@ pub fn primary_button_disabled_style(_: &Theme, _: button::Status) -> button::St
         background: Some(Background::Color(PRIMARY_BUTTON_DISABLED_COLOR)),
         text_color: Color::WHITE.scale_alpha(0.9),
         border: border::rounded(12),
+        ..button::Style::default()
+    }
+}
+
+pub fn action_button_style(_: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered => ACTION_BUTTON_HOVER_BG_COLOR,
+        button::Status::Pressed => ACTION_BUTTON_HOVER_BG_COLOR,
+        _ => ACTION_BUTTON_BG_COLOR,
+    };
+
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: PRIMARY_BUTTON_COLOR,
+        border: border::rounded(16)
+            .width(1)
+            .color(Color::from_rgba(0.0, 0.0, 0.0, 0.06)),
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.06),
+            offset: Vector::new(0.0, 0.0),
+            blur_radius: 14.0,
+        },
         ..button::Style::default()
     }
 }

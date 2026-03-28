@@ -3,14 +3,15 @@ use crate::i18n::I18n;
 use crate::message::Message;
 use crate::product::{Category, Product, ProductImage};
 use crate::ui::{
-    floating_panel_style, primary_button_disabled_style, primary_button_selected_style,
-    primary_button_style, scrollable_style,
+    action_button_style, floating_panel_style, primary_button_disabled_style,
+    primary_button_selected_style, primary_button_style, scrollable_style,
 };
 use iced::widget::{
     button, column, container, image, opaque, row, scrollable, stack, text, text_input,
 };
 use iced::{Color, Element, Length};
 use std::collections::HashMap;
+use std::path::Path;
 
 pub fn session_view<'a>(
     i18n: &'a I18n,
@@ -85,7 +86,7 @@ pub fn session_view<'a>(
         products_list = products_list.push(text(i18n.t("no_products")));
     }
 
-    let left_panel = container(
+    let products_panel = container(
         column![
             category_buttons,
             container(
@@ -111,6 +112,41 @@ pub fn session_view<'a>(
     .height(Length::Fill)
     .padding(16)
     .style(floating_panel_style);
+
+    let utility_panel = container(
+        row![
+            row![
+                utility_button("assets/ui/help.png", i18n.t("help"), Message::HelpPressed),
+                utility_button(
+                    "assets/ui/language.png",
+                    i18n.t("language"),
+                    Message::LanguagePressed,
+                )
+            ]
+            .spacing(12)
+            .width(Length::Shrink),
+            container(text("0,00 kg").size(40))
+                .width(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Right)
+                .center_y(Length::Fill)
+        ]
+        .spacing(16)
+        .align_y(iced::alignment::Vertical::Center)
+        .width(Length::Fill)
+        .height(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(16)
+    .style(floating_panel_style);
+
+    let left_panel = column![
+        container(products_panel).height(Length::Fill),
+        container(utility_panel).height(Length::Fixed(132.0)),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .spacing(16);
 
     let cart_header = text(i18n.t("cart")).size(30);
     let mut cart_items = column![].spacing(8).width(Length::Fill);
@@ -223,6 +259,39 @@ pub fn session_view<'a>(
     } else {
         content
     }
+}
+
+fn utility_button<'a>(icon_path: &'a str, label: String, message: Message) -> Element<'a, Message> {
+    let icon: Element<'a, Message> = if Path::new(icon_path).exists() {
+        image(icon_path)
+            .width(Length::Fixed(42.0))
+            .height(Length::Fixed(42.0))
+            .into()
+    } else {
+        container(text(label.chars().next().unwrap_or('?').to_string()).size(24))
+            .width(Length::Fixed(42.0))
+            .height(Length::Fixed(42.0))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    };
+
+    button(
+        container(
+            column![icon, text(label).size(16)]
+                .spacing(8)
+                .align_x(iced::alignment::Horizontal::Center),
+        )
+        .width(Length::Fixed(120.0))
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(120.0))
+    .height(Length::Fill)
+    .style(action_button_style)
+    .on_press(message)
+    .into()
 }
 
 fn category_filter_row<'a>(

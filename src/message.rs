@@ -5,6 +5,8 @@ use crate::product::{Product, ProductImage};
 pub enum Message {
     StartPressed,
     RetryConnectionPressed,
+    HelpPressed,
+    LanguagePressed,
     ProductSelected(String),
     CategorySelected(String),
     QuantityChanged(String),

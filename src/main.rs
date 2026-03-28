@@ -40,6 +40,7 @@ enum Screen {
 
 struct SelfCheckout {
     screen: Screen,
+    current_language: String,
     i18n: I18n,
     api_base_url: String,
     counter_id: String,
@@ -76,6 +77,7 @@ impl SelfCheckout {
         (
             Self {
                 screen: Screen::Connecting,
+                current_language: language.clone(),
                 i18n: I18n::load(&language),
                 api_base_url: api_base_url.clone(),
                 counter_id: counter_id.clone(),
@@ -135,6 +137,20 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                     Message::ConnectionFinished,
                 )
             }
+        }
+        Message::HelpPressed => Task::none(),
+        Message::LanguagePressed => {
+            let next_language = if state.current_language == "pl" {
+                "en".to_string()
+            } else {
+                "pl".to_string()
+            };
+
+            state.current_language = next_language.clone();
+            state.i18n = I18n::load(&next_language);
+            state.quantity_error.clear();
+
+            Task::none()
         }
         Message::ConnectionFinished(result) => match result {
             Ok((products, categories, checkout_session)) => {
