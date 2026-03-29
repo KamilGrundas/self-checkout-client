@@ -106,6 +106,13 @@ const PANEL_SHADOW_COLOR: Color = Color {
     a: 0.12,
 };
 
+const PRODUCT_TILE_SHADOW_COLOR: Color = Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.05,
+};
+
 pub fn primary_button_style(_: &Theme, status: button::Status) -> button::Style {
     let background = match status {
         button::Status::Hovered => PRIMARY_BUTTON_HOVER_COLOR,
@@ -178,6 +185,26 @@ pub fn danger_button_style(_: &Theme, status: button::Status) -> button::Style {
         background: Some(Background::Color(background)),
         text_color: Color::WHITE,
         border: border::rounded(12),
+        ..button::Style::default()
+    }
+}
+
+pub fn product_tile_button_style(_: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered => Color::from_rgb8(0xFA, 0xFC, 0xFB),
+        button::Status::Pressed => Color::from_rgb8(0xF6, 0xF9, 0xF7),
+        _ => Color::WHITE,
+    };
+
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: PRIMARY_BUTTON_SELECTED_COLOR,
+        border: border::rounded(18),
+        shadow: Shadow {
+            color: PRODUCT_TILE_SHADOW_COLOR,
+            offset: Vector::new(0.0, 0.0),
+            blur_radius: 10.0,
+        },
         ..button::Style::default()
     }
 }

@@ -5,7 +5,7 @@ use crate::product::{Category, Product, ProductImage};
 use crate::ui::{
     action_button_style, danger_button_style, floating_panel_style, keypad_button_style,
     primary_button_disabled_style, primary_button_selected_style, primary_button_style,
-    scrollable_style,
+    product_tile_button_style, scrollable_style,
 };
 use iced::widget::{
     button, column, container, image, opaque, row, scrollable, stack, text, text_input,
@@ -68,7 +68,7 @@ pub fn session_view<'a>(
                     .height(Length::Fixed(220.0)),
             )
             .width(Length::FillPortion(1))
-            .style(primary_button_style)
+            .style(product_tile_button_style)
             .on_press(Message::ProductSelected(product.id.clone()));
 
             tiles_row = tiles_row.push(tile);
@@ -336,12 +336,13 @@ fn category_button<'a>(
     key: &str,
     selected_category_key: &str,
 ) -> Element<'a, Message> {
-    button(text(label))
+    button(text(label).size(20))
         .style(if key == selected_category_key {
             primary_button_selected_style
         } else {
             primary_button_style
         })
+        .padding([14, 22])
         .on_press(Message::CategorySelected(key.to_string()))
         .into()
 }
