@@ -1,3 +1,4 @@
+mod camera;
 mod checkout;
 mod i18n;
 mod message;
@@ -5,6 +6,7 @@ mod product;
 mod ui;
 mod views;
 
+use crate::camera::{CameraOption, CameraWorker, CapturedFrame, list_cameras};
 use crate::checkout::{CartItem, CheckoutSession, ConnectPayload, SyncCartPayload};
 use crate::i18n::I18n;
 use crate::message::Message;
@@ -22,6 +24,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use views::intro::welcome_view;
+use views::mode_selection::mode_selection_view;
 use views::session::session_view;
 
 fn main() -> iced::Result {
@@ -34,8 +37,24 @@ fn main() -> iced::Result {
 enum Screen {
     #[default]
     Connecting,
+    ModeSelection,
     Welcome,
     Session,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MlMode {
+    Off,
+    Label,
+    On,
+}
+
+#[derive(Debug, Clone)]
+struct PendingMlCapture {
+    session_id: String,
+    capture_index: usize,
+    product_id: Option<String>,
+    product_name: Option<String>,
 }
 
 struct SelfCheckout {
@@ -43,6 +62,7 @@ struct SelfCheckout {
     current_language: String,
     i18n: I18n,
     api_base_url: String,
+    ml_api_base_url: String,
     counter_id: String,
     counter_password: String,
     client_id: String,
@@ -53,6 +73,8 @@ struct SelfCheckout {
     selected_category_key: String,
     status: String,
     loading_products: bool,
+    ml_mode: Option<MlMode>,
+    pending_mode_selection: Option<MlMode>,
     cart: Vec<CartItem>,
     selected_product: Option<Product>,
     quantity_input: String,
@@ -61,6 +83,14 @@ struct SelfCheckout {
     connection_failed: bool,
     recovering_connection: bool,
     manual_reconnect_available: bool,
+    last_ml_snapshot_session_id: Option<String>,
+    last_ml_snapshot_capture_index: Option<usize>,
+    cameras: Vec<CameraOption>,
+    selected_camera: Option<CameraOption>,
+    camera_error: String,
+    pending_ml_capture: Option<PendingMlCapture>,
+    ml_ready_enabled: bool,
+    camera_worker: Option<CameraWorker>,
 }
 
 impl SelfCheckout {
@@ -70,9 +100,15 @@ impl SelfCheckout {
         let language = env::var("DEFAULT_LANG").unwrap_or_else(|_| "en".to_string());
         let api_base_url =
             env::var("API_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
+        let ml_api_base_url =
+            env::var("ML_API_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8001".to_string());
         let counter_id = env::var("CHECKOUT_COUNTER_ID").unwrap_or_default();
         let counter_password = env::var("CHECKOUT_COUNTER_PASSWORD").unwrap_or_default();
         let client_id = load_or_create_client_id();
+        let (cameras, selected_camera, camera_error) = match list_cameras() {
+            Ok(cameras) => (cameras, None, String::new()),
+            Err(error) => (Vec::new(), None, error),
+        };
 
         (
             Self {
@@ -80,6 +116,7 @@ impl SelfCheckout {
                 current_language: language.clone(),
                 i18n: I18n::load(&language),
                 api_base_url: api_base_url.clone(),
+                ml_api_base_url,
                 counter_id: counter_id.clone(),
                 counter_password: counter_password.clone(),
                 client_id: client_id.clone(),
@@ -90,6 +127,8 @@ impl SelfCheckout {
                 selected_category_key: "all".to_string(),
                 status: "Connecting to backend...".to_string(),
                 loading_products: true,
+                ml_mode: None,
+                pending_mode_selection: None,
                 cart: Vec::new(),
                 selected_product: None,
                 quantity_input: String::new(),
@@ -98,6 +137,14 @@ impl SelfCheckout {
                 connection_failed: false,
                 recovering_connection: false,
                 manual_reconnect_available: false,
+                last_ml_snapshot_session_id: None,
+                last_ml_snapshot_capture_index: None,
+                cameras,
+                selected_camera,
+                camera_error,
+                pending_ml_capture: None,
+                ml_ready_enabled: false,
+                camera_worker: None,
             },
             connect_task(
                 api_base_url,
@@ -118,6 +165,47 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
     match message {
         Message::StartPressed => {
             state.screen = Screen::Session;
+            maybe_label_baseline_snapshot_task(state)
+        }
+        Message::ModeSelected(mode) => {
+            state.pending_ml_capture = None;
+            state.ml_ready_enabled = false;
+            state.camera_worker = None;
+
+            if matches!(mode, MlMode::Label | MlMode::On) {
+                state.pending_mode_selection = Some(mode);
+
+                let Some(selected_camera) = state.selected_camera.clone() else {
+                    state.camera_error.clear();
+                    state.screen = Screen::ModeSelection;
+                    return Task::none();
+                };
+
+                match CameraWorker::start(selected_camera) {
+                    Ok(worker) => {
+                        state.camera_worker = Some(worker);
+                        state.camera_error.clear();
+                    }
+                    Err(error) => {
+                        state.camera_error = error;
+                        state.screen = Screen::ModeSelection;
+                        return Task::none();
+                    }
+                }
+            }
+
+            if mode == MlMode::Off {
+                state.pending_mode_selection = None;
+                state.selected_camera = None;
+                state.camera_error.clear();
+            }
+
+            state.ml_mode = Some(mode);
+            state.screen = if state.cart.is_empty() {
+                Screen::Welcome
+            } else {
+                Screen::Session
+            };
             Task::none()
         }
         Message::RetryConnectionPressed => {
@@ -152,6 +240,16 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
 
             Task::none()
         }
+        Message::CameraSelected(camera) => {
+            state.selected_camera = Some(camera);
+            state.camera_error.clear();
+
+            if let Some(mode @ (MlMode::Label | MlMode::On)) = state.pending_mode_selection {
+                return update(state, Message::ModeSelected(mode));
+            }
+
+            Task::none()
+        }
         Message::ConnectionFinished(result) => match result {
             Ok((products, categories, checkout_session)) => {
                 state.loading_products = false;
@@ -161,11 +259,15 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.categories = categories;
                 state.products = products;
                 state.cart = checkout_session.cart.clone();
-                state.checkout_session = Some(checkout_session);
-                state.screen = if state.cart.is_empty() {
-                    Screen::Welcome
+                state.checkout_session = Some(checkout_session.clone());
+                state.screen = if state.ml_mode.is_some() {
+                    if state.cart.is_empty() {
+                        Screen::Welcome
+                    } else {
+                        Screen::Session
+                    }
                 } else {
-                    Screen::Session
+                    Screen::ModeSelection
                 };
 
                 product_image_tasks(&state.products)
@@ -187,7 +289,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.categories = categories;
                 state.products = products;
                 state.cart = checkout_session.cart.clone();
-                state.checkout_session = Some(checkout_session);
+                state.checkout_session = Some(checkout_session.clone());
                 state.recovering_connection = false;
                 state.connection_failed = false;
                 state.manual_reconnect_available = false;
@@ -305,6 +407,54 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::MlSnapshotUploaded {
+            session_id,
+            capture_index,
+            result,
+        } => {
+            match result {
+                Ok(()) => {
+                    let should_advance = match (
+                        state.last_ml_snapshot_session_id.as_deref(),
+                        state.last_ml_snapshot_capture_index,
+                    ) {
+                        (Some(current_session_id), Some(current_capture_index)) => {
+                            current_session_id != session_id
+                                || capture_index >= current_capture_index
+                        }
+                        _ => true,
+                    };
+
+                    if should_advance {
+                        state.last_ml_snapshot_session_id = Some(session_id);
+                        state.last_ml_snapshot_capture_index = Some(capture_index);
+                    }
+                }
+                Err(error) => {
+                    state.camera_error = error;
+                }
+            }
+
+            Task::none()
+        }
+        Message::MlPlacementReady => {
+            state.ml_ready_enabled = true;
+            Task::none()
+        }
+        Message::MlPlacementConfirmed => {
+            let Some(pending_capture) = state.pending_ml_capture.take() else {
+                return Task::none();
+            };
+
+            state.ml_ready_enabled = false;
+            ml_snapshot_task(
+                state,
+                pending_capture.session_id,
+                pending_capture.capture_index,
+                pending_capture.product_id,
+                pending_capture.product_name,
+            )
+        }
         Message::WeightMeasured(weight) => {
             state.measuring_weight = false;
             state.quantity_input = format!("{weight:.2}");
@@ -314,8 +464,30 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
         Message::CartSynced(result) => match result {
             Ok(checkout_session) => {
                 state.cart = checkout_session.cart.clone();
-                state.checkout_session = Some(checkout_session);
+                state.checkout_session = Some(checkout_session.clone());
                 state.status.clear();
+                if state.ml_mode == Some(MlMode::Label) && state.selected_camera.is_some() {
+                    let capture_index = checkout_session.cart.len();
+                    if capture_index > 0 {
+                        state.pending_ml_capture = Some(PendingMlCapture {
+                            session_id: checkout_session.id.clone(),
+                            capture_index,
+                            product_id: checkout_session
+                                .cart
+                                .last()
+                                .map(|item| item.product_id.clone()),
+                            product_name: checkout_session
+                                .cart
+                                .last()
+                                .map(|item| item.name.clone()),
+                        });
+                        state.ml_ready_enabled = false;
+                        return Task::perform(wait_for_ready_button(), |_| {
+                            Message::MlPlacementReady
+                        });
+                    }
+                }
+
                 Task::none()
             }
             Err(error) => {
@@ -353,7 +525,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             Ok((products, categories, checkout_session)) => {
                 state.categories = categories;
                 state.products = products;
-                state.checkout_session = Some(checkout_session);
+                state.checkout_session = Some(checkout_session.clone());
                 state.cart.clear();
                 state.selected_category_key = "all".to_string();
                 state.selected_product = None;
@@ -379,6 +551,13 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
 fn view(state: &SelfCheckout) -> Element<'_, Message> {
     match state.screen {
         Screen::Connecting => connection_view(state),
+        Screen::ModeSelection => mode_selection_view(
+            &state.i18n,
+            &state.cameras,
+            state.selected_camera.as_ref(),
+            state.pending_mode_selection,
+            &state.camera_error,
+        ),
         Screen::Welcome => welcome_view(&state.i18n),
         Screen::Session => session_view(
             &state.i18n,
@@ -393,6 +572,8 @@ fn view(state: &SelfCheckout) -> Element<'_, Message> {
             &state.quantity_error,
             state.measuring_weight,
             !state.cart.is_empty(),
+            state.pending_ml_capture.is_some(),
+            state.ml_ready_enabled,
             state.recovering_connection,
             &state.status,
             state.manual_reconnect_available,
@@ -496,6 +677,65 @@ fn recovery_task(state: &SelfCheckout) -> Task<Message> {
             state.client_id.clone(),
         ),
         Message::RecoveryFinished,
+    )
+}
+
+fn maybe_label_baseline_snapshot_task(state: &SelfCheckout) -> Task<Message> {
+    if state.ml_mode != Some(MlMode::Label) {
+        return Task::none();
+    }
+
+    let Some(checkout_session) = state.checkout_session.as_ref() else {
+        return Task::none();
+    };
+
+    if !checkout_session.cart.is_empty() {
+        return Task::none();
+    }
+
+    ml_snapshot_task(state, checkout_session.id.clone(), 0, None, None)
+}
+
+fn ml_snapshot_task(
+    state: &SelfCheckout,
+    session_id: String,
+    capture_index: usize,
+    product_id: Option<String>,
+    product_name: Option<String>,
+) -> Task<Message> {
+    let Some(camera_worker) = state.camera_worker.as_ref() else {
+        return Task::none();
+    };
+
+    if state.ml_api_base_url.trim().is_empty() {
+        return Task::none();
+    }
+
+    if state.last_ml_snapshot_session_id.as_deref() == Some(session_id.as_str())
+        && state
+            .last_ml_snapshot_capture_index
+            .is_some_and(|last_capture_index| last_capture_index >= capture_index)
+    {
+        return Task::none();
+    }
+
+    let snapshot_result = camera_worker.capture_now();
+    let ml_api_base_url = state.ml_api_base_url.clone();
+    let upload_session_id = session_id.clone();
+    Task::perform(
+        upload_ml_snapshot(
+            ml_api_base_url,
+            snapshot_result,
+            session_id,
+            capture_index,
+            product_id,
+            product_name,
+        ),
+        move |result| Message::MlSnapshotUploaded {
+            session_id: upload_session_id,
+            capture_index,
+            result,
+        },
     )
 }
 
@@ -661,6 +901,43 @@ async fn fetch_image(image_url: String) -> Result<ProductImage, String> {
     Ok(image::Handle::from_bytes(bytes.to_vec()))
 }
 
+async fn upload_ml_snapshot(
+    ml_api_base_url: String,
+    snapshot_result: Result<CapturedFrame, String>,
+    session_id: String,
+    capture_index: usize,
+    product_id: Option<String>,
+    product_name: Option<String>,
+) -> Result<(), String> {
+    let frame = snapshot_result?;
+    let file_part = reqwest::blocking::multipart::Part::bytes(frame.bytes)
+        .file_name(frame.file_name.to_string())
+        .mime_str(frame.content_type)
+        .map_err(|error| format!("Failed to prepare ML snapshot upload: {error}"))?;
+
+    let mut form = reqwest::blocking::multipart::Form::new()
+        .text("capture_index", capture_index.to_string())
+        .part("file", file_part);
+
+    if let Some(product_id) = product_id {
+        form = form.text("product_id", product_id);
+    }
+
+    if let Some(product_name) = product_name {
+        form = form.text("product_name", product_name);
+    }
+
+    reqwest::blocking::Client::new()
+        .post(ml_session_snapshots_url(&ml_api_base_url, &session_id))
+        .multipart(form)
+        .send()
+        .map_err(|error| format!("Failed to upload ML snapshot: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Failed to upload ML snapshot: {error}"))?;
+
+    Ok(())
+}
+
 async fn measure_weight() -> f64 {
     thread::sleep(Duration::from_secs(3));
 
@@ -670,6 +947,10 @@ async fn measure_weight() -> f64 {
         .unwrap_or(0);
 
     2.0 + (millis % 3001) as f64 / 1000.0
+}
+
+async fn wait_for_ready_button() {
+    thread::sleep(Duration::from_secs(3));
 }
 
 fn api_v1_base(api_base_url: &str) -> String {
@@ -708,6 +989,22 @@ fn session_pay_url(api_base_url: &str, session_id: &str) -> String {
     format!(
         "{}/checkout-sessions/{session_id}/pay",
         api_v1_base(api_base_url)
+    )
+}
+
+fn ml_api_v1_base(api_base_url: &str) -> String {
+    let trimmed = api_base_url.trim_end_matches('/');
+    if trimmed.ends_with("/api/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/api/v1")
+    }
+}
+
+fn ml_session_snapshots_url(api_base_url: &str, session_id: &str) -> String {
+    format!(
+        "{}/checkout-sessions/{session_id}/snapshots",
+        ml_api_v1_base(api_base_url)
     )
 }
 

@@ -1,5 +1,6 @@
 {
   "start": "Dotknij aby rozpocząć",
+  "choose_mode": "Wybierz tryb",
   "all": "Wszystkie",
   "cart": "Koszyk",
   "cart_empty": "Koszyk jest pusty",
@@ -7,6 +8,11 @@
   "pay": "Zapłać",
   "help": "Pomoc",
   "language": "Język",
+  "camera_select": "Wybierz kamerę",
+  "mode_requires_camera": "Kamera jest wymagana dla tego trybu",
+  "ml_place_product": "Odłóż produkt do miejsca odkładu",
+  "ml_ready_delay": "Przycisk będzie aktywny po 3 sekundach.",
+  "ready": "Gotowe",
   "add": "Dodaj",
   "cancel": "Anuluj",
   "loading_products": "Ładowanie produktów...",

@@ -27,6 +27,8 @@ pub fn session_view<'a>(
     quantity_error: &'a str,
     measuring_weight: bool,
     can_pay: bool,
+    show_ml_label_prompt: bool,
+    ml_ready_enabled: bool,
     recovering_connection: bool,
     connection_status: &'a str,
     manual_reconnect_available: bool,
@@ -251,6 +253,8 @@ pub fn session_view<'a>(
             quantity_error,
             measuring_weight,
         )
+    } else if show_ml_label_prompt {
+        ml_label_prompt_view(i18n, base, ml_ready_enabled)
     } else {
         base
     };
@@ -260,6 +264,72 @@ pub fn session_view<'a>(
     } else {
         content
     }
+}
+
+fn ml_label_prompt_view<'a>(
+    i18n: &'a I18n,
+    base: Element<'a, Message>,
+    ml_ready_enabled: bool,
+) -> Element<'a, Message> {
+    let dim = container("")
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| {
+            iced::widget::container::Style::default()
+                .background(Color::from_rgba(0.0, 0.0, 0.0, 0.6))
+        });
+
+    let ready_button = {
+        let button = button(
+            container(text(i18n.t("ready")).size(24))
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+        )
+        .padding([18, 24])
+        .width(Length::Fill)
+        .style(if ml_ready_enabled {
+            primary_button_style
+        } else {
+            primary_button_disabled_style
+        });
+
+        if ml_ready_enabled {
+            button.on_press(Message::MlPlacementConfirmed)
+        } else {
+            button
+        }
+    };
+
+    let modal = container(
+        column![
+            text(i18n.t("ml_place_product")).size(30),
+            text(i18n.t("ml_ready_delay")).size(18),
+            ready_button,
+        ]
+        .spacing(20)
+        .padding(24),
+    )
+    .width(Length::Fixed(520.0))
+    .style(iced::widget::container::rounded_box);
+
+    stack([
+        base,
+        stack([
+            opaque(dim),
+            container(modal)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+        ])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into(),
+    ])
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 fn utility_button<'a>(icon_path: &'a str, label: String, message: Message) -> Element<'a, Message> {

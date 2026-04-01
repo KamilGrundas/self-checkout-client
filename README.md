@@ -5,6 +5,7 @@ Rust desktop client for the self-checkout flow, built with `iced`.
 It is designed to work with the backend and infrastructure from the same project family:
 - Backend: `https://github.com/KamilGrundas/self-checkout-backend`
 - Infrastructure: `https://github.com/KamilGrundas/self-checkout-infra`
+- ML service: `https://github.com/KamilGrundas/self-checkout-ml`
 
 ## What It Does
 
@@ -13,12 +14,15 @@ It is designed to work with the backend and infrastructure from the same project
 - fetches and displays products,
 - syncs the cart with the backend,
 - closes the checkout session after payment,
-- blocks local cart changes when backend synchronization fails.
+- blocks local cart changes when backend synchronization fails,
+- supports startup mode selection for `ML_off` and `ML_label`,
+- can upload session snapshots to the ML service during labeling.
 
 ## Requirements
 
 - Rust stable
 - running backend API
+- optional running ML API for `ML_label`
 - configured checkout counter in the backend
 
 ## Configuration
@@ -31,6 +35,7 @@ API_BASE_URL=http://127.0.0.1:8000
 CHECKOUT_COUNTER_ID=put-counter-id-here
 CHECKOUT_COUNTER_PASSWORD=put-counter-password-here
 CLIENT_ID_STORAGE_PATH=.self-checkout-client-id
+ML_API_BASE_URL=http://127.0.0.1:8001
 ```
 
 ## Run
@@ -50,3 +55,10 @@ cargo check
 - The client retries backend connection 3 times with a 3-second delay.
 - If the backend is still unavailable, it shows a manual reconnect action.
 - If the backend fails during an active session, the client shows a reconnect overlay and reloads session state from the backend before allowing further changes.
+- After the backend connection succeeds, the operator chooses a startup mode on a dedicated screen.
+- `ML_off` runs the checkout flow without camera or ML integration.
+- `ML_label` requires selecting a camera before entering the checkout flow.
+- In `ML_label`, `Tap to start` uploads the first baseline image of the empty shelf area.
+- In `ML_label`, each next snapshot is uploaded only after the placement modal is shown and the operator clicks `Ready`.
+- `ML_on` is visible in the UI but currently disabled.
+- The client stores a local device identifier in `.self-checkout-client-id` so the backend can restore an unfinished session.

@@ -1,5 +1,6 @@
 {
   "start": "Tap to start",
+  "choose_mode": "Choose mode",
   "all": "All",
   "cart": "Cart",
   "cart_empty": "Cart is empty",
@@ -7,6 +8,11 @@
   "pay": "Pay",
   "help": "Help",
   "language": "Language",
+  "camera_select": "Select camera",
+  "mode_requires_camera": "Camera is required for this mode",
+  "ml_place_product": "Place the product on the shelf area",
+  "ml_ready_delay": "The button will be enabled after 3 seconds.",
+  "ready": "Ready",
   "add": "Add",
   "cancel": "Cancel",
   "loading_products": "Loading products...",
