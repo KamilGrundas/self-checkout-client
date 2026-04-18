@@ -27,8 +27,8 @@ pub fn session_view<'a>(
     quantity_error: &'a str,
     measuring_weight: bool,
     can_pay: bool,
-    show_ml_label_prompt: bool,
-    ml_ready_enabled: bool,
+    show_shelf_placement_prompt: bool,
+    shelf_ready_enabled: bool,
     recovering_connection: bool,
     connection_status: &'a str,
     manual_reconnect_available: bool,
@@ -253,8 +253,8 @@ pub fn session_view<'a>(
             quantity_error,
             measuring_weight,
         )
-    } else if show_ml_label_prompt {
-        ml_label_prompt_view(i18n, base, ml_ready_enabled)
+    } else if show_shelf_placement_prompt {
+        ml_label_prompt_view(i18n, base, shelf_ready_enabled)
     } else {
         base
     };
@@ -269,7 +269,7 @@ pub fn session_view<'a>(
 fn ml_label_prompt_view<'a>(
     i18n: &'a I18n,
     base: Element<'a, Message>,
-    ml_ready_enabled: bool,
+    shelf_ready_enabled: bool,
 ) -> Element<'a, Message> {
     let dim = container("")
         .width(Length::Fill)
@@ -287,14 +287,14 @@ fn ml_label_prompt_view<'a>(
         )
         .padding([18, 24])
         .width(Length::Fill)
-        .style(if ml_ready_enabled {
+        .style(if shelf_ready_enabled {
             primary_button_style
         } else {
             primary_button_disabled_style
         });
 
-        if ml_ready_enabled {
-            button.on_press(Message::MlPlacementConfirmed)
+        if shelf_ready_enabled {
+            button.on_press(Message::ShelfPlacementConfirmed)
         } else {
             button
         }

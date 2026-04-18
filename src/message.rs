@@ -10,6 +10,7 @@ pub enum Message {
     HelpPressed,
     LanguagePressed,
     CameraSelected(CameraOption),
+    ScaleCameraSelected(CameraOption),
     ProductSelected(String),
     CategorySelected(String),
     QuantityChanged(String),
@@ -22,13 +23,18 @@ pub enum Message {
         product_id: String,
         result: Result<ProductImage, String>,
     },
-    MlSnapshotUploaded {
+    ShelfSnapshotUploaded {
         session_id: String,
         capture_index: usize,
         result: Result<(), String>,
     },
-    MlPlacementReady,
-    MlPlacementConfirmed,
+    ScaleSnapshotUploaded {
+        session_id: String,
+        capture_index: usize,
+        result: Result<(), String>,
+    },
+    ShelfPlacementReady,
+    ShelfPlacementConfirmed,
     WeightMeasured(f64),
     ConnectionFinished(
         Result<(Vec<Product>, Vec<crate::product::Category>, CheckoutSession), String>,

@@ -2,7 +2,8 @@ use crate::camera::CameraOption;
 use crate::i18n::I18n;
 use crate::message::Message;
 use crate::ui::{
-    primary_button_disabled_style, primary_button_selected_style, primary_button_style,
+    action_button_style, primary_button_disabled_style, primary_button_selected_style,
+    primary_button_style,
 };
 use iced::widget::{button, column, container, pick_list, row, text};
 use iced::{Element, Length};
@@ -10,11 +11,13 @@ use iced::{Element, Length};
 pub fn mode_selection_view<'a>(
     i18n: &'a I18n,
     cameras: &'a [CameraOption],
-    selected_camera: Option<&'a CameraOption>,
+    selected_shelf_camera: Option<&'a CameraOption>,
+    selected_scale_camera: Option<&'a CameraOption>,
     pending_mode_selection: Option<crate::MlMode>,
-    camera_error: &'a str,
+    shelf_camera_error: &'a str,
+    scale_camera_error: &'a str,
 ) -> Element<'a, Message> {
-    let show_camera_picker = matches!(
+    let show_camera_pickers = matches!(
         pending_mode_selection,
         Some(crate::MlMode::Label | crate::MlMode::On)
     );
@@ -44,16 +47,42 @@ pub fn mode_selection_view<'a>(
     .spacing(20)
     .width(Length::Shrink);
 
-    if show_camera_picker {
-        let camera_picker = pick_list(cameras, selected_camera, Message::CameraSelected)
+    if show_camera_pickers {
+        let shelf_picker = pick_list(cameras, selected_shelf_camera, Message::CameraSelected)
             .placeholder(i18n.t("camera_select"))
             .width(Length::Fixed(360.0));
 
-        content = content.push(camera_picker);
+        let scale_picker = pick_list(cameras, selected_scale_camera, Message::ScaleCameraSelected)
+            .placeholder(i18n.t("scale_camera_select"))
+            .width(Length::Fixed(360.0));
+
+        content = content
+            .push(column![text(i18n.t("shelf_camera_label")).size(16), shelf_picker].spacing(6))
+            .push(column![text(i18n.t("scale_camera_label")).size(16), scale_picker].spacing(6));
     }
 
-    if !camera_error.is_empty() {
-        content = content.push(text(camera_error).size(16));
+    if show_camera_pickers {
+        let confirm_button = if selected_shelf_camera.is_some() || selected_scale_camera.is_some() {
+            let mode = pending_mode_selection.unwrap();
+            button(text(i18n.t("confirm_camera_selection")).size(22))
+                .style(action_button_style)
+                .padding([14, 28])
+                .on_press(Message::ModeSelected(mode))
+        } else {
+            button(text(i18n.t("confirm_camera_selection")).size(22))
+                .style(primary_button_disabled_style)
+                .padding([14, 28])
+        };
+
+        content = content.push(confirm_button);
+    }
+
+    if !shelf_camera_error.is_empty() {
+        content = content.push(text(shelf_camera_error).size(16));
+    }
+
+    if !scale_camera_error.is_empty() {
+        content = content.push(text(scale_camera_error).size(16));
     }
 
     container(content)

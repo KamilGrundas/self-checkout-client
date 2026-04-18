@@ -50,7 +50,7 @@ pub enum MlMode {
 }
 
 #[derive(Debug, Clone)]
-struct PendingMlCapture {
+struct PendingShelfCapture {
     session_id: String,
     capture_index: usize,
     product_id: Option<String>,
@@ -83,14 +83,21 @@ struct SelfCheckout {
     connection_failed: bool,
     recovering_connection: bool,
     manual_reconnect_available: bool,
-    last_ml_snapshot_session_id: Option<String>,
-    last_ml_snapshot_capture_index: Option<usize>,
     cameras: Vec<CameraOption>,
-    selected_camera: Option<CameraOption>,
-    camera_error: String,
-    pending_ml_capture: Option<PendingMlCapture>,
-    ml_ready_enabled: bool,
-    camera_worker: Option<CameraWorker>,
+    // Shelf camera
+    selected_shelf_camera: Option<CameraOption>,
+    shelf_camera_worker: Option<CameraWorker>,
+    shelf_camera_error: String,
+    pending_shelf_capture: Option<PendingShelfCapture>,
+    shelf_ready_enabled: bool,
+    last_shelf_snapshot_session_id: Option<String>,
+    last_shelf_snapshot_capture_index: Option<usize>,
+    // Scale camera
+    selected_scale_camera: Option<CameraOption>,
+    scale_camera_worker: Option<CameraWorker>,
+    scale_camera_error: String,
+    last_scale_snapshot_session_id: Option<String>,
+    last_scale_snapshot_capture_index: Option<usize>,
 }
 
 impl SelfCheckout {
@@ -105,9 +112,9 @@ impl SelfCheckout {
         let counter_id = env::var("CHECKOUT_COUNTER_ID").unwrap_or_default();
         let counter_password = env::var("CHECKOUT_COUNTER_PASSWORD").unwrap_or_default();
         let client_id = load_or_create_client_id();
-        let (cameras, selected_camera, camera_error) = match list_cameras() {
-            Ok(cameras) => (cameras, None, String::new()),
-            Err(error) => (Vec::new(), None, error),
+        let (cameras, camera_error) = match list_cameras() {
+            Ok(cameras) => (cameras, String::new()),
+            Err(error) => (Vec::new(), error),
         };
 
         (
@@ -137,14 +144,19 @@ impl SelfCheckout {
                 connection_failed: false,
                 recovering_connection: false,
                 manual_reconnect_available: false,
-                last_ml_snapshot_session_id: None,
-                last_ml_snapshot_capture_index: None,
                 cameras,
-                selected_camera,
-                camera_error,
-                pending_ml_capture: None,
-                ml_ready_enabled: false,
-                camera_worker: None,
+                selected_shelf_camera: None,
+                shelf_camera_worker: None,
+                shelf_camera_error: camera_error,
+                pending_shelf_capture: None,
+                shelf_ready_enabled: false,
+                last_shelf_snapshot_session_id: None,
+                last_shelf_snapshot_capture_index: None,
+                selected_scale_camera: None,
+                scale_camera_worker: None,
+                scale_camera_error: String::new(),
+                last_scale_snapshot_session_id: None,
+                last_scale_snapshot_capture_index: None,
             },
             connect_task(
                 api_base_url,
@@ -165,39 +177,57 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
     match message {
         Message::StartPressed => {
             state.screen = Screen::Session;
-            maybe_label_baseline_snapshot_task(state)
+            maybe_label_baseline_shelf_snapshot_task(state)
         }
         Message::ModeSelected(mode) => {
-            state.pending_ml_capture = None;
-            state.ml_ready_enabled = false;
-            state.camera_worker = None;
+            state.pending_shelf_capture = None;
+            state.shelf_ready_enabled = false;
+            state.shelf_camera_worker = None;
+            state.scale_camera_worker = None;
 
             if matches!(mode, MlMode::Label | MlMode::On) {
                 state.pending_mode_selection = Some(mode);
 
-                let Some(selected_camera) = state.selected_camera.clone() else {
-                    state.camera_error.clear();
+                if state.selected_shelf_camera.is_none() && state.selected_scale_camera.is_none() {
                     state.screen = Screen::ModeSelection;
                     return Task::none();
-                };
+                }
 
-                match CameraWorker::start(selected_camera) {
-                    Ok(worker) => {
-                        state.camera_worker = Some(worker);
-                        state.camera_error.clear();
+                if let Some(shelf_camera) = state.selected_shelf_camera.clone() {
+                    match CameraWorker::start(shelf_camera) {
+                        Ok(worker) => {
+                            state.shelf_camera_worker = Some(worker);
+                            state.shelf_camera_error.clear();
+                        }
+                        Err(error) => {
+                            state.shelf_camera_error = error;
+                            state.screen = Screen::ModeSelection;
+                            return Task::none();
+                        }
                     }
-                    Err(error) => {
-                        state.camera_error = error;
-                        state.screen = Screen::ModeSelection;
-                        return Task::none();
+                }
+
+                if let Some(scale_camera) = state.selected_scale_camera.clone() {
+                    match CameraWorker::start(scale_camera) {
+                        Ok(worker) => {
+                            state.scale_camera_worker = Some(worker);
+                            state.scale_camera_error.clear();
+                        }
+                        Err(error) => {
+                            state.scale_camera_error = error;
+                            state.screen = Screen::ModeSelection;
+                            return Task::none();
+                        }
                     }
                 }
             }
 
             if mode == MlMode::Off {
                 state.pending_mode_selection = None;
-                state.selected_camera = None;
-                state.camera_error.clear();
+                state.selected_shelf_camera = None;
+                state.shelf_camera_error.clear();
+                state.selected_scale_camera = None;
+                state.scale_camera_error.clear();
             }
 
             state.ml_mode = Some(mode);
@@ -241,13 +271,26 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CameraSelected(camera) => {
-            state.selected_camera = Some(camera);
-            state.camera_error.clear();
+            state.selected_shelf_camera = Some(camera);
+            state.shelf_camera_error.clear();
+            Task::none()
+        }
+        Message::ScaleCameraSelected(camera) => {
+            state.scale_camera_error.clear();
 
-            if let Some(mode @ (MlMode::Label | MlMode::On)) = state.pending_mode_selection {
-                return update(state, Message::ModeSelected(mode));
+            if matches!(state.ml_mode, Some(MlMode::Label | MlMode::On)) {
+                match CameraWorker::start(camera.clone()) {
+                    Ok(worker) => {
+                        state.scale_camera_worker = Some(worker);
+                    }
+                    Err(error) => {
+                        state.scale_camera_error = error;
+                        return Task::none();
+                    }
+                }
             }
 
+            state.selected_scale_camera = Some(camera);
             Task::none()
         }
         Message::ConnectionFinished(result) => match result {
@@ -383,6 +426,9 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 }
             };
 
+            let capture_index = state.cart.len() + 1;
+            let session_id = state.checkout_session.as_ref().map(|s| s.id.clone());
+
             let mut next_cart = state.cart.clone();
             next_cart.push(CartItem::from_product(&product, quantity));
 
@@ -392,7 +438,25 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             state.measuring_weight = false;
             state.status = "Syncing cart...".to_string();
 
-            sync_cart_task(state, next_cart)
+            let sync_task = sync_cart_task(state, next_cart);
+
+            let scale_task = if state.ml_mode == Some(MlMode::Label) {
+                if let Some(sid) = session_id {
+                    scale_snapshot_task(
+                        state,
+                        sid,
+                        capture_index,
+                        Some(product.id.clone()),
+                        Some(product.name.clone()),
+                    )
+                } else {
+                    Task::none()
+                }
+            } else {
+                Task::none()
+            };
+
+            Task::batch([sync_task, scale_task])
         }
         Message::CancelAddToCart => {
             state.selected_product = None;
@@ -407,7 +471,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::MlSnapshotUploaded {
+        Message::ShelfSnapshotUploaded {
             session_id,
             capture_index,
             result,
@@ -415,8 +479,8 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             match result {
                 Ok(()) => {
                     let should_advance = match (
-                        state.last_ml_snapshot_session_id.as_deref(),
-                        state.last_ml_snapshot_capture_index,
+                        state.last_shelf_snapshot_session_id.as_deref(),
+                        state.last_shelf_snapshot_capture_index,
                     ) {
                         (Some(current_session_id), Some(current_capture_index)) => {
                             current_session_id != session_id
@@ -426,28 +490,58 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                     };
 
                     if should_advance {
-                        state.last_ml_snapshot_session_id = Some(session_id);
-                        state.last_ml_snapshot_capture_index = Some(capture_index);
+                        state.last_shelf_snapshot_session_id = Some(session_id);
+                        state.last_shelf_snapshot_capture_index = Some(capture_index);
                     }
                 }
                 Err(error) => {
-                    state.camera_error = error;
+                    state.shelf_camera_error = error;
                 }
             }
 
             Task::none()
         }
-        Message::MlPlacementReady => {
-            state.ml_ready_enabled = true;
+        Message::ScaleSnapshotUploaded {
+            session_id,
+            capture_index,
+            result,
+        } => {
+            match result {
+                Ok(()) => {
+                    let should_advance = match (
+                        state.last_scale_snapshot_session_id.as_deref(),
+                        state.last_scale_snapshot_capture_index,
+                    ) {
+                        (Some(current_session_id), Some(current_capture_index)) => {
+                            current_session_id != session_id
+                                || capture_index >= current_capture_index
+                        }
+                        _ => true,
+                    };
+
+                    if should_advance {
+                        state.last_scale_snapshot_session_id = Some(session_id);
+                        state.last_scale_snapshot_capture_index = Some(capture_index);
+                    }
+                }
+                Err(error) => {
+                    state.scale_camera_error = error;
+                }
+            }
+
             Task::none()
         }
-        Message::MlPlacementConfirmed => {
-            let Some(pending_capture) = state.pending_ml_capture.take() else {
+        Message::ShelfPlacementReady => {
+            state.shelf_ready_enabled = true;
+            Task::none()
+        }
+        Message::ShelfPlacementConfirmed => {
+            let Some(pending_capture) = state.pending_shelf_capture.take() else {
                 return Task::none();
             };
 
-            state.ml_ready_enabled = false;
-            ml_snapshot_task(
+            state.shelf_ready_enabled = false;
+            shelf_snapshot_task(
                 state,
                 pending_capture.session_id,
                 pending_capture.capture_index,
@@ -466,10 +560,10 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.cart = checkout_session.cart.clone();
                 state.checkout_session = Some(checkout_session.clone());
                 state.status.clear();
-                if state.ml_mode == Some(MlMode::Label) && state.selected_camera.is_some() {
+                if state.ml_mode == Some(MlMode::Label) && state.selected_shelf_camera.is_some() {
                     let capture_index = checkout_session.cart.len();
                     if capture_index > 0 {
-                        state.pending_ml_capture = Some(PendingMlCapture {
+                        state.pending_shelf_capture = Some(PendingShelfCapture {
                             session_id: checkout_session.id.clone(),
                             capture_index,
                             product_id: checkout_session
@@ -481,9 +575,9 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                                 .last()
                                 .map(|item| item.name.clone()),
                         });
-                        state.ml_ready_enabled = false;
-                        return Task::perform(wait_for_ready_button(), |_| {
-                            Message::MlPlacementReady
+                        state.shelf_ready_enabled = false;
+                        return Task::perform(wait_for_shelf_placement(), |_| {
+                            Message::ShelfPlacementReady
                         });
                     }
                 }
@@ -554,9 +648,11 @@ fn view(state: &SelfCheckout) -> Element<'_, Message> {
         Screen::ModeSelection => mode_selection_view(
             &state.i18n,
             &state.cameras,
-            state.selected_camera.as_ref(),
+            state.selected_shelf_camera.as_ref(),
+            state.selected_scale_camera.as_ref(),
             state.pending_mode_selection,
-            &state.camera_error,
+            &state.shelf_camera_error,
+            &state.scale_camera_error,
         ),
         Screen::Welcome => welcome_view(&state.i18n),
         Screen::Session => session_view(
@@ -572,8 +668,8 @@ fn view(state: &SelfCheckout) -> Element<'_, Message> {
             &state.quantity_error,
             state.measuring_weight,
             !state.cart.is_empty(),
-            state.pending_ml_capture.is_some(),
-            state.ml_ready_enabled,
+            state.pending_shelf_capture.is_some(),
+            state.shelf_ready_enabled,
             state.recovering_connection,
             &state.status,
             state.manual_reconnect_available,
@@ -680,7 +776,7 @@ fn recovery_task(state: &SelfCheckout) -> Task<Message> {
     )
 }
 
-fn maybe_label_baseline_snapshot_task(state: &SelfCheckout) -> Task<Message> {
+fn maybe_label_baseline_shelf_snapshot_task(state: &SelfCheckout) -> Task<Message> {
     if state.ml_mode != Some(MlMode::Label) {
         return Task::none();
     }
@@ -693,17 +789,17 @@ fn maybe_label_baseline_snapshot_task(state: &SelfCheckout) -> Task<Message> {
         return Task::none();
     }
 
-    ml_snapshot_task(state, checkout_session.id.clone(), 0, None, None)
+    shelf_snapshot_task(state, checkout_session.id.clone(), 0, None, None)
 }
 
-fn ml_snapshot_task(
+fn shelf_snapshot_task(
     state: &SelfCheckout,
     session_id: String,
     capture_index: usize,
     product_id: Option<String>,
     product_name: Option<String>,
 ) -> Task<Message> {
-    let Some(camera_worker) = state.camera_worker.as_ref() else {
+    let Some(camera_worker) = state.shelf_camera_worker.as_ref() else {
         return Task::none();
     };
 
@@ -711,27 +807,66 @@ fn ml_snapshot_task(
         return Task::none();
     }
 
-    if state.last_ml_snapshot_session_id.as_deref() == Some(session_id.as_str())
+    if state.last_shelf_snapshot_session_id.as_deref() == Some(session_id.as_str())
         && state
-            .last_ml_snapshot_capture_index
-            .is_some_and(|last_capture_index| last_capture_index >= capture_index)
+            .last_shelf_snapshot_capture_index
+            .is_some_and(|last| last >= capture_index)
     {
         return Task::none();
     }
 
     let snapshot_result = camera_worker.capture_now();
-    let ml_api_base_url = state.ml_api_base_url.clone();
     let upload_session_id = session_id.clone();
     Task::perform(
-        upload_ml_snapshot(
-            ml_api_base_url,
+        upload_snapshot(
+            ml_shelf_snapshots_url(&state.ml_api_base_url, &session_id),
             snapshot_result,
-            session_id,
             capture_index,
             product_id,
             product_name,
         ),
-        move |result| Message::MlSnapshotUploaded {
+        move |result| Message::ShelfSnapshotUploaded {
+            session_id: upload_session_id,
+            capture_index,
+            result,
+        },
+    )
+}
+
+fn scale_snapshot_task(
+    state: &SelfCheckout,
+    session_id: String,
+    capture_index: usize,
+    product_id: Option<String>,
+    product_name: Option<String>,
+) -> Task<Message> {
+    let Some(camera_worker) = state.scale_camera_worker.as_ref() else {
+        return Task::none();
+    };
+
+    if state.ml_api_base_url.trim().is_empty() {
+        return Task::none();
+    }
+
+    if state.last_scale_snapshot_session_id.as_deref() == Some(session_id.as_str())
+        && state
+            .last_scale_snapshot_capture_index
+            .is_some_and(|last| last >= capture_index)
+    {
+        return Task::none();
+    }
+
+    let snapshot_result = camera_worker.capture_now();
+    let upload_session_id = session_id.clone();
+    Task::perform(
+        upload_snapshot(
+            ml_scale_snapshots_url(&state.ml_api_base_url, &session_id),
+            snapshot_result,
+            capture_index,
+            product_id,
+            product_name,
+        ),
+        move |result| Message::ScaleSnapshotUploaded {
             session_id: upload_session_id,
             capture_index,
             result,
@@ -901,10 +1036,9 @@ async fn fetch_image(image_url: String) -> Result<ProductImage, String> {
     Ok(image::Handle::from_bytes(bytes.to_vec()))
 }
 
-async fn upload_ml_snapshot(
-    ml_api_base_url: String,
+async fn upload_snapshot(
+    url: String,
     snapshot_result: Result<CapturedFrame, String>,
-    session_id: String,
     capture_index: usize,
     product_id: Option<String>,
     product_name: Option<String>,
@@ -913,7 +1047,7 @@ async fn upload_ml_snapshot(
     let file_part = reqwest::blocking::multipart::Part::bytes(frame.bytes)
         .file_name(frame.file_name.to_string())
         .mime_str(frame.content_type)
-        .map_err(|error| format!("Failed to prepare ML snapshot upload: {error}"))?;
+        .map_err(|error| format!("Failed to prepare snapshot upload: {error}"))?;
 
     let mut form = reqwest::blocking::multipart::Form::new()
         .text("capture_index", capture_index.to_string())
@@ -928,12 +1062,12 @@ async fn upload_ml_snapshot(
     }
 
     reqwest::blocking::Client::new()
-        .post(ml_session_snapshots_url(&ml_api_base_url, &session_id))
+        .post(url)
         .multipart(form)
         .send()
-        .map_err(|error| format!("Failed to upload ML snapshot: {error}"))?
+        .map_err(|error| format!("Failed to upload snapshot: {error}"))?
         .error_for_status()
-        .map_err(|error| format!("Failed to upload ML snapshot: {error}"))?;
+        .map_err(|error| format!("Failed to upload snapshot: {error}"))?;
 
     Ok(())
 }
@@ -949,7 +1083,7 @@ async fn measure_weight() -> f64 {
     2.0 + (millis % 3001) as f64 / 1000.0
 }
 
-async fn wait_for_ready_button() {
+async fn wait_for_shelf_placement() {
     thread::sleep(Duration::from_secs(3));
 }
 
@@ -1001,9 +1135,16 @@ fn ml_api_v1_base(api_base_url: &str) -> String {
     }
 }
 
-fn ml_session_snapshots_url(api_base_url: &str, session_id: &str) -> String {
+fn ml_shelf_snapshots_url(api_base_url: &str, session_id: &str) -> String {
     format!(
-        "{}/checkout-sessions/{session_id}/snapshots",
+        "{}/checkout-sessions/{session_id}/shelf-snapshots",
+        ml_api_v1_base(api_base_url)
+    )
+}
+
+fn ml_scale_snapshots_url(api_base_url: &str, session_id: &str) -> String {
+    format!(
+        "{}/checkout-sessions/{session_id}/scale-snapshots",
         ml_api_v1_base(api_base_url)
     )
 }
