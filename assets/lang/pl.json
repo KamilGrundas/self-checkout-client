@@ -28,5 +28,9 @@
   "quantity_weight": "Waga (kg)",
   "quantity_count": "Ilość (szt)",
   "quantity_invalid_weight": "Podaj poprawną wagę",
-  "quantity_invalid_count": "Podaj poprawną ilość sztuk"
+  "quantity_invalid_count": "Podaj poprawną ilość sztuk",
+  "place_product_prompt": "Odłóż produkt na wagę lub wybierz artykuł z listy",
+  "search_product": "Wyszukaj produkt",
+  "category_suggested": "Sugerowane",
+  "classifying": "Rozpoznawanie produktu..."
 }

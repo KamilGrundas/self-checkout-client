@@ -38,7 +38,12 @@ pub fn mode_selection_view<'a>(
 
     let ml_on = button(text("ML_on").size(28))
         .padding([16, 28])
-        .style(primary_button_disabled_style);
+        .style(if pending_mode_selection == Some(crate::MlMode::On) {
+            primary_button_selected_style
+        } else {
+            primary_button_style
+        })
+        .on_press(Message::ModeSelected(crate::MlMode::On));
 
     let mut content = column![
         text(i18n.t("choose_mode")).size(42),

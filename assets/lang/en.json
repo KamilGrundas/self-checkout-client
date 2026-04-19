@@ -28,5 +28,9 @@
   "quantity_weight": "Weight (kg)",
   "quantity_count": "Quantity (pcs)",
   "quantity_invalid_weight": "Enter a valid weight",
-  "quantity_invalid_count": "Enter a valid item quantity"
+  "quantity_invalid_count": "Enter a valid item quantity",
+  "place_product_prompt": "Place product on scale or select from list",
+  "search_product": "Search product",
+  "category_suggested": "Suggested",
+  "classifying": "Identifying product..."
 }

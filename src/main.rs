@@ -98,6 +98,10 @@ struct SelfCheckout {
     scale_camera_error: String,
     last_scale_snapshot_session_id: Option<String>,
     last_scale_snapshot_capture_index: Option<usize>,
+    // Product search
+    product_search_open: bool,
+    classifying: bool,
+    suggested_product_ids: Vec<String>,
 }
 
 impl SelfCheckout {
@@ -157,6 +161,9 @@ impl SelfCheckout {
                 scale_camera_error: String::new(),
                 last_scale_snapshot_session_id: None,
                 last_scale_snapshot_capture_index: None,
+                product_search_open: false,
+                classifying: false,
+                suggested_product_ids: Vec::new(),
             },
             connect_task(
                 api_base_url,
@@ -436,6 +443,8 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             state.quantity_input.clear();
             state.quantity_error.clear();
             state.measuring_weight = false;
+            state.product_search_open = false;
+            state.suggested_product_ids.clear();
             state.status = "Syncing cart...".to_string();
 
             let sync_task = sync_cart_task(state, next_cart);
@@ -626,6 +635,9 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.quantity_input.clear();
                 state.quantity_error.clear();
                 state.measuring_weight = false;
+                state.product_search_open = false;
+                state.classifying = false;
+                state.suggested_product_ids.clear();
                 state.recovering_connection = false;
                 state.screen = Screen::Welcome;
                 state.status = "Payment completed".to_string();
@@ -639,6 +651,84 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 recovery_task(state)
             }
         },
+        Message::SearchProductPressed => {
+            state.suggested_product_ids.clear();
+            if state.ml_mode == Some(MlMode::On) {
+                if let Some(camera_worker) = state.scale_camera_worker.as_ref() {
+                    state.classifying = true;
+                    let handle = camera_worker.shared_handle();
+                    return Task::perform(
+                        async move { handle.capture_fresh() },
+                        Message::ScaleCameraFrameReady,
+                    );
+                }
+            }
+            state.product_search_open = true;
+            Task::none()
+        }
+        Message::ScaleCameraFrameReady(frame_result) => {
+            let classify_task = Task::perform(
+                classify_product(state.ml_api_base_url.clone(), frame_result.clone()),
+                Message::ClassifyFinished,
+            );
+
+            let scale_task = if let Some(session) = state.checkout_session.as_ref() {
+                let capture_index = state.cart.len() + 1;
+                let already_sent = state.last_scale_snapshot_session_id.as_deref()
+                    == Some(session.id.as_str())
+                    && state
+                        .last_scale_snapshot_capture_index
+                        .is_some_and(|last| last >= capture_index);
+
+                if !already_sent && !state.ml_api_base_url.trim().is_empty() {
+                    let url = ml_scale_snapshots_url(&state.ml_api_base_url, &session.id);
+                    let upload_session_id = session.id.clone();
+                    Task::perform(
+                        upload_snapshot(url, frame_result, capture_index, None, None),
+                        move |result| Message::ScaleSnapshotUploaded {
+                            session_id: upload_session_id,
+                            capture_index,
+                            result,
+                        },
+                    )
+                } else {
+                    Task::none()
+                }
+            } else {
+                Task::none()
+            };
+
+            Task::batch([classify_task, scale_task])
+        }
+        Message::ClassifyFinished(result) => {
+            state.classifying = false;
+            state.product_search_open = true;
+            match result {
+                Ok(name_scores) => {
+                    // Match returned names to products (case-insensitive), preserve confidence order
+                    state.suggested_product_ids = name_scores
+                        .iter()
+                        .filter_map(|(name, _score)| {
+                            let name_lower = name.to_lowercase();
+                            state
+                                .products
+                                .iter()
+                                .find(|p| p.name.to_lowercase() == name_lower)
+                                .map(|p| p.id.clone())
+                        })
+                        .collect();
+                    if !state.suggested_product_ids.is_empty() {
+                        state.selected_category_key = "suggested".to_string();
+                    } else {
+                        state.selected_category_key = "all".to_string();
+                    }
+                }
+                Err(_) => {
+                    state.selected_category_key = "all".to_string();
+                }
+            }
+            Task::none()
+        }
     }
 }
 
@@ -673,6 +763,9 @@ fn view(state: &SelfCheckout) -> Element<'_, Message> {
             state.recovering_connection,
             &state.status,
             state.manual_reconnect_available,
+            state.product_search_open,
+            state.classifying,
+            &state.suggested_product_ids,
         ),
     }
 }
@@ -1072,6 +1165,39 @@ async fn upload_snapshot(
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+struct PredictionPublic {
+    scores: HashMap<String, f64>,
+}
+
+async fn classify_product(
+    ml_api_base_url: String,
+    snapshot_result: Result<CapturedFrame, String>,
+) -> Result<Vec<(String, f64)>, String> {
+    let frame = snapshot_result.map_err(|e| format!("Camera capture failed: {e}"))?;
+    let file_part = reqwest::blocking::multipart::Part::bytes(frame.bytes)
+        .file_name(frame.file_name.to_string())
+        .mime_str(frame.content_type)
+        .map_err(|error| format!("Failed to prepare classify request: {error}"))?;
+
+    let form = reqwest::blocking::multipart::Form::new().part("file", file_part);
+
+    let prediction = reqwest::blocking::Client::new()
+        .post(ml_classify_url(&ml_api_base_url))
+        .multipart(form)
+        .send()
+        .map_err(|error| format!("Failed to call classify: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Classify endpoint error: {error}"))?
+        .json::<PredictionPublic>()
+        .map_err(|error| format!("Failed to decode classify response: {error}"))?;
+
+    let mut scored: Vec<(String, f64)> = prediction.scores.into_iter().collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(scored.into_iter().take(10).collect())
+}
+
 async fn measure_weight() -> f64 {
     thread::sleep(Duration::from_secs(3));
 
@@ -1140,6 +1266,10 @@ fn ml_shelf_snapshots_url(api_base_url: &str, session_id: &str) -> String {
         "{}/checkout-sessions/{session_id}/shelf-snapshots",
         ml_api_v1_base(api_base_url)
     )
+}
+
+fn ml_classify_url(api_base_url: &str) -> String {
+    format!("{}/inference/classify", ml_api_v1_base(api_base_url))
 }
 
 fn ml_scale_snapshots_url(api_base_url: &str, session_id: &str) -> String {

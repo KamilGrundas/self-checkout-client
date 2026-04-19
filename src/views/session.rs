@@ -32,89 +32,107 @@ pub fn session_view<'a>(
     recovering_connection: bool,
     connection_status: &'a str,
     manual_reconnect_available: bool,
+    product_search_open: bool,
+    classifying: bool,
+    suggested_product_ids: &'a [String],
 ) -> Element<'a, Message> {
-    let filtered_products: Vec<&Product> = products
-        .iter()
-        .filter(|product| {
-            selected_category_key == "all" || product.category_key == selected_category_key
-        })
-        .collect();
+    // Products grid panel — only built when search is open
+    let products_grid_panel = {
+        let filtered_products: Vec<&Product> = if selected_category_key == "suggested" {
+            suggested_product_ids
+                .iter()
+                .filter_map(|id| products.iter().find(|p| p.id == *id))
+                .collect()
+        } else {
+            products
+                .iter()
+                .filter(|product| {
+                    selected_category_key == "all" || product.category_key == selected_category_key
+                })
+                .collect()
+        };
 
-    let category_buttons = category_filter_row(i18n, categories, selected_category_key);
+        let category_buttons = category_filter_row(
+            i18n,
+            categories,
+            selected_category_key,
+            suggested_product_ids,
+        );
 
-    let mut products_list = column![].spacing(8).width(Length::Fill);
+        let mut products_list = column![].spacing(8).width(Length::Fill);
 
-    for chunk in filtered_products.chunks(5) {
-        let mut tiles_row = row![].spacing(8).width(Length::Fill);
+        for chunk in filtered_products.chunks(5) {
+            let mut tiles_row = row![].spacing(8).width(Length::Fill);
 
-        for product in chunk {
-            let image_content: Element<'_, Message> =
-                if let Some(handle) = product_images.get(&product.id) {
-                    image(handle.clone())
+            for product in chunk {
+                let image_content: Element<'_, Message> =
+                    if let Some(handle) = product_images.get(&product.id) {
+                        image(handle.clone())
+                            .width(Length::Fill)
+                            .height(Length::Fixed(110.0))
+                            .into()
+                    } else {
+                        container(text("..."))
+                            .width(Length::Fill)
+                            .height(Length::Fixed(110.0))
+                            .center_x(Length::Fill)
+                            .center_y(Length::Fill)
+                            .into()
+                    };
+
+                let tile = button(
+                    container(column![image_content, text(&product.name),].spacing(8))
+                        .padding(10)
                         .width(Length::Fill)
-                        .height(Length::Fixed(110.0))
-                        .into()
-                } else {
-                    container(text("..."))
-                        .width(Length::Fill)
-                        .height(Length::Fixed(110.0))
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill)
-                        .into()
-                };
+                        .height(Length::Fixed(220.0)),
+                )
+                .width(Length::FillPortion(1))
+                .style(product_tile_button_style)
+                .on_press(Message::ProductSelected(product.id.clone()));
 
-            let tile = button(
-                container(column![image_content, text(&product.name),].spacing(8))
-                    .padding(10)
-                    .width(Length::Fill)
-                    .height(Length::Fixed(220.0)),
-            )
-            .width(Length::FillPortion(1))
-            .style(product_tile_button_style)
-            .on_press(Message::ProductSelected(product.id.clone()));
+                tiles_row = tiles_row.push(tile);
+            }
 
-            tiles_row = tiles_row.push(tile);
+            for _ in chunk.len()..5 {
+                tiles_row = tiles_row.push(container(text("")).width(Length::FillPortion(1)));
+            }
+
+            products_list = products_list.push(tiles_row);
         }
 
-        for _ in chunk.len()..5 {
-            tiles_row = tiles_row.push(container(text("")).width(Length::FillPortion(1)));
+        if loading_products {
+            products_list = products_list.push(text(i18n.t("loading_products")));
+        } else if filtered_products.is_empty() {
+            products_list = products_list.push(text(i18n.t("no_products")));
         }
 
-        products_list = products_list.push(tiles_row);
-    }
-
-    if loading_products {
-        products_list = products_list.push(text(i18n.t("loading_products")));
-    } else if filtered_products.is_empty() {
-        products_list = products_list.push(text(i18n.t("no_products")));
-    }
-
-    let products_panel = container(
-        column![
-            category_buttons,
-            container(
-                scrollable(products_list)
-                    .direction(scrollable::Direction::Vertical(
-                        scrollable::Scrollbar::new()
-                            .width(12)
-                            .margin(2)
-                            .scroller_width(12)
-                            .spacing(14),
-                    ))
-                    .style(scrollable_style)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-            )
+        container(
+            column![
+                category_buttons,
+                container(
+                    scrollable(products_list)
+                        .direction(scrollable::Direction::Vertical(
+                            scrollable::Scrollbar::new()
+                                .width(12)
+                                .margin(2)
+                                .scroller_width(12)
+                                .spacing(14),
+                        ))
+                        .style(scrollable_style)
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                )
+                .width(Length::Fill)
+            ]
             .width(Length::Fill)
-        ]
+            .height(Length::Fill)
+            .spacing(10),
+        )
         .width(Length::Fill)
         .height(Length::Fill)
-        .spacing(10),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .padding(16)
-    .style(floating_panel_style);
+        .padding(16)
+        .style(floating_panel_style)
+    };
 
     let utility_panel = container(
         row![
@@ -143,10 +161,53 @@ pub fn session_view<'a>(
     .padding(16)
     .style(floating_panel_style);
 
-    let left_panel = column![
-        container(products_panel).height(Length::Fill),
-        container(utility_panel).height(Length::Fixed(132.0)),
-    ]
+    let left_panel = if product_search_open {
+        column![
+            container(products_grid_panel).height(Length::Fill),
+            container(utility_panel).height(Length::Fixed(132.0)),
+        ]
+    } else {
+        let prompt_panel = container(
+            container(text(i18n.t("place_product_prompt")).size(24))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(32)
+        .style(floating_panel_style);
+
+        let search_panel: Element<'_, Message> = if classifying {
+            container(text(i18n.t("classifying")).size(22))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .style(floating_panel_style)
+                .into()
+        } else {
+            button(
+                container(text(i18n.t("search_product")).size(26))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(primary_button_style)
+            .on_press(Message::SearchProductPressed)
+            .into()
+        };
+
+        column![
+            container(prompt_panel).height(Length::Fill),
+            container(search_panel).height(Length::Fixed(132.0)),
+            container(utility_panel).height(Length::Fixed(132.0)),
+        ]
+    }
     .width(Length::Fill)
     .height(Length::Fill)
     .spacing(16);
@@ -369,8 +430,17 @@ fn category_filter_row<'a>(
     i18n: &'a I18n,
     categories: &'a [Category],
     selected_category_key: &'a str,
+    suggested_product_ids: &'a [String],
 ) -> Element<'a, Message> {
     let mut buttons = row![].spacing(8).width(Length::Fill);
+
+    if !suggested_product_ids.is_empty() {
+        buttons = buttons.push(category_button(
+            i18n.t("category_suggested"),
+            "suggested",
+            selected_category_key,
+        ));
+    }
 
     buttons = buttons.push(category_button(i18n.t("all"), "all", selected_category_key));
 

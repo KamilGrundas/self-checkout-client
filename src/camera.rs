@@ -32,6 +32,62 @@ pub struct CameraWorker {
     join_handle: Option<JoinHandle<()>>,
 }
 
+/// Cloneable handle to a camera worker — can be sent to async tasks.
+#[derive(Clone)]
+pub struct SharedCameraHandle {
+    latest_frame: Arc<Mutex<Option<CapturedFrame>>>,
+    last_error: Arc<Mutex<Option<String>>>,
+    frame_revision: Arc<AtomicU64>,
+}
+
+impl SharedCameraHandle {
+    fn latest_frame(&self) -> Result<CapturedFrame, String> {
+        if let Some(error) = self
+            .last_error
+            .lock()
+            .map_err(|_| "Failed to read camera error state".to_string())?
+            .clone()
+        {
+            return Err(error);
+        }
+
+        self.latest_frame
+            .lock()
+            .map_err(|_| "Failed to read camera frame buffer".to_string())?
+            .clone()
+            .ok_or_else(|| "No camera frame available yet".to_string())
+    }
+
+    /// Waits for several new frames so the captured image reflects the current
+    /// scene rather than what the camera was seeing before the call.
+    pub fn capture_fresh(&self) -> Result<CapturedFrame, String> {
+        let start_revision = self.frame_revision.load(Ordering::Relaxed);
+        let min_revision = start_revision.saturating_add(3);
+        let earliest_capture = Instant::now() + Duration::from_millis(600);
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        while Instant::now() < deadline {
+            if let Some(error) = self
+                .last_error
+                .lock()
+                .map_err(|_| "Failed to read camera error state".to_string())?
+                .clone()
+            {
+                return Err(error);
+            }
+
+            let current_revision = self.frame_revision.load(Ordering::Relaxed);
+            if Instant::now() >= earliest_capture && current_revision >= min_revision {
+                return self.latest_frame();
+            }
+
+            thread::sleep(Duration::from_millis(30));
+        }
+
+        self.latest_frame()
+    }
+}
+
 impl CameraWorker {
     pub fn start(camera: CameraOption) -> Result<Self, String> {
         let latest_frame = Arc::new(Mutex::new(None));
@@ -106,6 +162,14 @@ impl CameraWorker {
             .map_err(|_| "Failed to read camera frame buffer".to_string())?
             .clone()
             .ok_or_else(|| "No camera frame is available yet".to_string())
+    }
+
+    pub fn shared_handle(&self) -> SharedCameraHandle {
+        SharedCameraHandle {
+            latest_frame: Arc::clone(&self.latest_frame),
+            last_error: Arc::clone(&self.last_error),
+            frame_revision: Arc::clone(&self.frame_revision),
+        }
     }
 
     pub fn capture_now(&self) -> Result<CapturedFrame, String> {

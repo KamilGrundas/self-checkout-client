@@ -1,4 +1,4 @@
-use crate::camera::CameraOption;
+use crate::camera::{CameraOption, CapturedFrame};
 use crate::checkout::CheckoutSession;
 use crate::product::{Product, ProductImage};
 
@@ -45,4 +45,7 @@ pub enum Message {
     CartSynced(Result<CheckoutSession, String>),
     PayPressed,
     PaymentFinished(Result<(Vec<Product>, Vec<crate::product::Category>, CheckoutSession), String>),
+    SearchProductPressed,
+    ScaleCameraFrameReady(Result<CapturedFrame, String>),
+    ClassifyFinished(Result<Vec<(String, f64)>, String>),
 }
