@@ -32,5 +32,8 @@
   "place_product_prompt": "Odłóż produkt na wagę lub wybierz artykuł z listy",
   "search_product": "Wyszukaj produkt",
   "category_suggested": "Sugerowane",
-  "classifying": "Rozpoznawanie produktu..."
+  "classifying": "Rozpoznawanie produktu...",
+  "settings_title": "Ustawienia",
+  "settings_mode": "Tryb",
+  "settings_close": "Zamknij"
 }

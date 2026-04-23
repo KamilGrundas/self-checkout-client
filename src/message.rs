@@ -2,15 +2,26 @@ use crate::camera::{CameraOption, CapturedFrame};
 use crate::checkout::CheckoutSession;
 use crate::product::{Product, ProductImage};
 
+/// Decoded camera preview frames ready for display.
+#[derive(Debug, Clone)]
+pub struct PreviewFrames {
+    pub shelf: Option<Result<iced::widget::image::Handle, String>>,
+    pub scale: Option<Result<iced::widget::image::Handle, String>>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     StartPressed,
-    ModeSelected(crate::MlMode),
+    ToggleSettings,
+    SettingsModeSelected(crate::MlMode),
+    CameraPreviewTick(PreviewFrames),
     RetryConnectionPressed,
     HelpPressed,
     LanguagePressed,
     CameraSelected(CameraOption),
+    ClearShelfCamera,
     ScaleCameraSelected(CameraOption),
+    ClearScaleCamera,
     ProductSelected(String),
     CategorySelected(String),
     QuantityChanged(String),

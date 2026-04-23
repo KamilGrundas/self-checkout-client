@@ -41,7 +41,7 @@ pub struct SharedCameraHandle {
 }
 
 impl SharedCameraHandle {
-    fn latest_frame(&self) -> Result<CapturedFrame, String> {
+    pub fn latest_frame(&self) -> Result<CapturedFrame, String> {
         if let Some(error) = self
             .last_error
             .lock()
@@ -89,13 +89,12 @@ impl SharedCameraHandle {
 }
 
 impl CameraWorker {
-    pub fn start(camera: CameraOption) -> Result<Self, String> {
+    pub fn start_nonblocking(camera: CameraOption) -> Self {
         let latest_frame = Arc::new(Mutex::new(None));
         let last_error = Arc::new(Mutex::new(None));
         let frame_revision = Arc::new(AtomicU64::new(0));
         let stop_flag = Arc::new(AtomicBool::new(false));
 
-        let camera_label = camera.label.clone();
         let thread_latest_frame = Arc::clone(&latest_frame);
         let thread_last_error = Arc::clone(&last_error);
         let thread_frame_revision = Arc::clone(&frame_revision);
@@ -110,41 +109,13 @@ impl CameraWorker {
             )
         });
 
-        let worker = Self {
+        Self {
             latest_frame,
             last_error,
             frame_revision,
             stop_flag,
             join_handle: Some(join_handle),
-        };
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if let Some(error) = worker
-                .last_error
-                .lock()
-                .map_err(|_| "Failed to read camera error state".to_string())?
-                .clone()
-            {
-                return Err(error);
-            }
-
-            if worker
-                .latest_frame
-                .lock()
-                .map_err(|_| "Failed to read camera frame buffer".to_string())?
-                .is_some()
-            {
-                return Ok(worker);
-            }
-
-            thread::sleep(Duration::from_millis(50));
         }
-
-        Err(format!(
-            "Timed out while waiting for first frame from {}",
-            camera_label
-        ))
     }
 
     pub fn latest_frame(&self) -> Result<CapturedFrame, String> {

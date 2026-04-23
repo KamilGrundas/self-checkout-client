@@ -3,18 +3,20 @@ mod checkout;
 mod i18n;
 mod message;
 mod product;
+mod settings;
 mod ui;
 mod views;
 
-use crate::camera::{CameraOption, CameraWorker, CapturedFrame, list_cameras};
+use crate::camera::{CameraOption, CameraWorker, CapturedFrame, SharedCameraHandle, list_cameras};
 use crate::checkout::{CartItem, CheckoutSession, ConnectPayload, SyncCartPayload};
 use crate::i18n::I18n;
-use crate::message::Message;
+use crate::message::{Message, PreviewFrames};
 use crate::product::{CategoriesResponse, Category, Product, ProductImage, ProductsResponse};
+use crate::settings::PersistedSettings;
 use crate::ui::primary_button_style;
 
 use iced::widget::{button, column, container, image, text};
-use iced::{Element, Length, Task, Theme, application};
+use iced::{Element, Length, Subscription, Task, Theme, application, keyboard};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -24,12 +26,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use views::intro::welcome_view;
-use views::mode_selection::mode_selection_view;
 use views::session::session_view;
+use views::settings::settings_overlay;
 
 fn main() -> iced::Result {
     application(SelfCheckout::new, update, view)
         .theme(app_theme)
+        .subscription(subscription)
         .run()
 }
 
@@ -37,7 +40,6 @@ fn main() -> iced::Result {
 enum Screen {
     #[default]
     Connecting,
-    ModeSelection,
     Welcome,
     Session,
 }
@@ -73,8 +75,10 @@ struct SelfCheckout {
     selected_category_key: String,
     status: String,
     loading_products: bool,
-    ml_mode: Option<MlMode>,
-    pending_mode_selection: Option<MlMode>,
+    ml_mode: MlMode,
+    show_settings: bool,
+    shelf_preview_handle: Option<image::Handle>,
+    scale_preview_handle: Option<image::Handle>,
     cart: Vec<CartItem>,
     selected_product: Option<Product>,
     quantity_input: String,
@@ -121,6 +125,16 @@ impl SelfCheckout {
             Err(error) => (Vec::new(), error),
         };
 
+        let persisted = PersistedSettings::load();
+        let selected_shelf_camera = persisted.find_shelf_camera(&cameras).cloned();
+        let selected_scale_camera = persisted.find_scale_camera(&cameras).cloned();
+        let has_camera = selected_shelf_camera.is_some() || selected_scale_camera.is_some();
+        let ml_mode = match persisted.ml_mode_enum() {
+            mode @ (MlMode::On | MlMode::Label) if has_camera => mode,
+            MlMode::On | MlMode::Label => MlMode::Off,
+            mode => mode,
+        };
+
         (
             Self {
                 screen: Screen::Connecting,
@@ -138,8 +152,10 @@ impl SelfCheckout {
                 selected_category_key: "all".to_string(),
                 status: "Connecting to backend...".to_string(),
                 loading_products: true,
-                ml_mode: None,
-                pending_mode_selection: None,
+                ml_mode,
+                show_settings: false,
+                shelf_preview_handle: None,
+                scale_preview_handle: None,
                 cart: Vec::new(),
                 selected_product: None,
                 quantity_input: String::new(),
@@ -149,14 +165,14 @@ impl SelfCheckout {
                 recovering_connection: false,
                 manual_reconnect_available: false,
                 cameras,
-                selected_shelf_camera: None,
+                selected_shelf_camera,
                 shelf_camera_worker: None,
                 shelf_camera_error: camera_error,
                 pending_shelf_capture: None,
                 shelf_ready_enabled: false,
                 last_shelf_snapshot_session_id: None,
                 last_shelf_snapshot_capture_index: None,
-                selected_scale_camera: None,
+                selected_scale_camera,
                 scale_camera_worker: None,
                 scale_camera_error: String::new(),
                 last_scale_snapshot_session_id: None,
@@ -186,64 +202,81 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             state.screen = Screen::Session;
             maybe_label_baseline_shelf_snapshot_task(state)
         }
-        Message::ModeSelected(mode) => {
-            state.pending_shelf_capture = None;
-            state.shelf_ready_enabled = false;
-            state.shelf_camera_worker = None;
-            state.scale_camera_worker = None;
+        Message::ToggleSettings => {
+            if !matches!(state.screen, Screen::Welcome) {
+                return Task::none();
+            }
 
-            if matches!(mode, MlMode::Label | MlMode::On) {
-                state.pending_mode_selection = Some(mode);
+            state.show_settings = !state.show_settings;
 
-                if state.selected_shelf_camera.is_none() && state.selected_scale_camera.is_none() {
-                    state.screen = Screen::ModeSelection;
-                    return Task::none();
-                }
-
+            if state.show_settings {
+                // Start camera workers (non-blocking)
                 if let Some(shelf_camera) = state.selected_shelf_camera.clone() {
-                    match CameraWorker::start(shelf_camera) {
-                        Ok(worker) => {
-                            state.shelf_camera_worker = Some(worker);
-                            state.shelf_camera_error.clear();
-                        }
-                        Err(error) => {
-                            state.shelf_camera_error = error;
-                            state.screen = Screen::ModeSelection;
-                            return Task::none();
-                        }
+                    if state.shelf_camera_worker.is_none() {
+                        state.shelf_camera_worker =
+                            Some(CameraWorker::start_nonblocking(shelf_camera));
+                        state.shelf_camera_error.clear();
                     }
                 }
-
                 if let Some(scale_camera) = state.selected_scale_camera.clone() {
-                    match CameraWorker::start(scale_camera) {
-                        Ok(worker) => {
-                            state.scale_camera_worker = Some(worker);
-                            state.scale_camera_error.clear();
-                        }
-                        Err(error) => {
-                            state.scale_camera_error = error;
-                            state.screen = Screen::ModeSelection;
-                            return Task::none();
-                        }
+                    if state.scale_camera_worker.is_none() {
+                        state.scale_camera_worker =
+                            Some(CameraWorker::start_nonblocking(scale_camera));
+                        state.scale_camera_error.clear();
+                    }
+                }
+                return camera_preview_task(state);
+            } else {
+                // Closing settings — stop workers if mode is Off
+                if state.ml_mode == MlMode::Off {
+                    state.shelf_camera_worker = None;
+                    state.scale_camera_worker = None;
+                }
+                state.shelf_preview_handle = None;
+                state.scale_preview_handle = None;
+                save_current_settings(state);
+            }
+            Task::none()
+        }
+        Message::SettingsModeSelected(mode) => {
+            let has_camera =
+                state.selected_shelf_camera.is_some() || state.selected_scale_camera.is_some();
+            if matches!(mode, MlMode::On | MlMode::Label) && !has_camera {
+                return Task::none();
+            }
+            state.ml_mode = mode;
+            save_current_settings(state);
+            Task::none()
+        }
+        Message::CameraPreviewTick(frames) => {
+            if !state.show_settings {
+                return Task::none();
+            }
+
+            if let Some(result) = frames.shelf {
+                match result {
+                    Ok(handle) => {
+                        state.shelf_preview_handle = Some(handle);
+                        state.shelf_camera_error.clear();
+                    }
+                    Err(error) => {
+                        state.shelf_camera_error = error;
+                    }
+                }
+            }
+            if let Some(result) = frames.scale {
+                match result {
+                    Ok(handle) => {
+                        state.scale_preview_handle = Some(handle);
+                        state.scale_camera_error.clear();
+                    }
+                    Err(error) => {
+                        state.scale_camera_error = error;
                     }
                 }
             }
 
-            if mode == MlMode::Off {
-                state.pending_mode_selection = None;
-                state.selected_shelf_camera = None;
-                state.shelf_camera_error.clear();
-                state.selected_scale_camera = None;
-                state.scale_camera_error.clear();
-            }
-
-            state.ml_mode = Some(mode);
-            state.screen = if state.cart.is_empty() {
-                Screen::Welcome
-            } else {
-                Screen::Session
-            };
-            Task::none()
+            camera_preview_task(state)
         }
         Message::RetryConnectionPressed => {
             state.connection_failed = false;
@@ -278,26 +311,55 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CameraSelected(camera) => {
-            state.selected_shelf_camera = Some(camera);
             state.shelf_camera_error.clear();
+            state.shelf_camera_worker = None;
+            state.shelf_preview_handle = None;
+
+            if state.show_settings || state.ml_mode != MlMode::Off {
+                state.shelf_camera_worker = Some(CameraWorker::start_nonblocking(camera.clone()));
+            }
+
+            state.selected_shelf_camera = Some(camera);
+            save_current_settings(state);
+            Task::none()
+        }
+        Message::ClearShelfCamera => {
+            state.shelf_camera_worker = None;
+            state.selected_shelf_camera = None;
+            state.shelf_camera_error.clear();
+            state.shelf_preview_handle = None;
+            if matches!(state.ml_mode, MlMode::On | MlMode::Label)
+                && state.selected_scale_camera.is_none()
+            {
+                state.ml_mode = MlMode::Off;
+            }
+            save_current_settings(state);
             Task::none()
         }
         Message::ScaleCameraSelected(camera) => {
             state.scale_camera_error.clear();
+            state.scale_camera_worker = None;
+            state.scale_preview_handle = None;
 
-            if matches!(state.ml_mode, Some(MlMode::Label | MlMode::On)) {
-                match CameraWorker::start(camera.clone()) {
-                    Ok(worker) => {
-                        state.scale_camera_worker = Some(worker);
-                    }
-                    Err(error) => {
-                        state.scale_camera_error = error;
-                        return Task::none();
-                    }
-                }
+            if state.show_settings || state.ml_mode != MlMode::Off {
+                state.scale_camera_worker = Some(CameraWorker::start_nonblocking(camera.clone()));
             }
 
             state.selected_scale_camera = Some(camera);
+            save_current_settings(state);
+            Task::none()
+        }
+        Message::ClearScaleCamera => {
+            state.scale_camera_worker = None;
+            state.selected_scale_camera = None;
+            state.scale_camera_error.clear();
+            state.scale_preview_handle = None;
+            if matches!(state.ml_mode, MlMode::On | MlMode::Label)
+                && state.selected_shelf_camera.is_none()
+            {
+                state.ml_mode = MlMode::Off;
+            }
+            save_current_settings(state);
             Task::none()
         }
         Message::ConnectionFinished(result) => match result {
@@ -310,15 +372,27 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.products = products;
                 state.cart = checkout_session.cart.clone();
                 state.checkout_session = Some(checkout_session.clone());
-                state.screen = if state.ml_mode.is_some() {
-                    if state.cart.is_empty() {
-                        Screen::Welcome
-                    } else {
-                        Screen::Session
-                    }
+                state.screen = if state.cart.is_empty() {
+                    Screen::Welcome
                 } else {
-                    Screen::ModeSelection
+                    Screen::Session
                 };
+
+                // Start camera workers if mode requires them
+                if state.ml_mode != MlMode::Off {
+                    if let Some(shelf_camera) = state.selected_shelf_camera.clone() {
+                        if state.shelf_camera_worker.is_none() {
+                            state.shelf_camera_worker =
+                                Some(CameraWorker::start_nonblocking(shelf_camera));
+                        }
+                    }
+                    if let Some(scale_camera) = state.selected_scale_camera.clone() {
+                        if state.scale_camera_worker.is_none() {
+                            state.scale_camera_worker =
+                                Some(CameraWorker::start_nonblocking(scale_camera));
+                        }
+                    }
+                }
 
                 product_image_tasks(&state.products)
             }
@@ -449,7 +523,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
 
             let sync_task = sync_cart_task(state, next_cart);
 
-            let scale_task = if state.ml_mode == Some(MlMode::Label) {
+            let scale_task = if state.ml_mode == MlMode::Label {
                 if let Some(sid) = session_id {
                     scale_snapshot_task(
                         state,
@@ -569,7 +643,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.cart = checkout_session.cart.clone();
                 state.checkout_session = Some(checkout_session.clone());
                 state.status.clear();
-                if state.ml_mode == Some(MlMode::Label) && state.selected_shelf_camera.is_some() {
+                if state.ml_mode == MlMode::Label && state.selected_shelf_camera.is_some() {
                     let capture_index = checkout_session.cart.len();
                     if capture_index > 0 {
                         state.pending_shelf_capture = Some(PendingShelfCapture {
@@ -653,7 +727,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
         },
         Message::SearchProductPressed => {
             state.suggested_product_ids.clear();
-            if state.ml_mode == Some(MlMode::On) {
+            if state.ml_mode == MlMode::On {
                 if let Some(camera_worker) = state.scale_camera_worker.as_ref() {
                     state.classifying = true;
                     let handle = camera_worker.shared_handle();
@@ -732,19 +806,42 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
     }
 }
 
+fn subscription(state: &SelfCheckout) -> Subscription<Message> {
+    if matches!(state.screen, Screen::Welcome) && !state.show_settings {
+        keyboard::listen().filter_map(|event| match event {
+            keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character(ref c),
+                ..
+            } if c.as_str() == "o" => Some(Message::ToggleSettings),
+            _ => None,
+        })
+    } else {
+        Subscription::none()
+    }
+}
+
 fn view(state: &SelfCheckout) -> Element<'_, Message> {
     match state.screen {
         Screen::Connecting => connection_view(state),
-        Screen::ModeSelection => mode_selection_view(
-            &state.i18n,
-            &state.cameras,
-            state.selected_shelf_camera.as_ref(),
-            state.selected_scale_camera.as_ref(),
-            state.pending_mode_selection,
-            &state.shelf_camera_error,
-            &state.scale_camera_error,
-        ),
-        Screen::Welcome => welcome_view(&state.i18n),
+        Screen::Welcome => {
+            let base = welcome_view(&state.i18n);
+            if state.show_settings {
+                settings_overlay(
+                    &state.i18n,
+                    base,
+                    state.ml_mode,
+                    &state.cameras,
+                    state.selected_shelf_camera.as_ref(),
+                    state.selected_scale_camera.as_ref(),
+                    state.shelf_preview_handle.as_ref(),
+                    state.scale_preview_handle.as_ref(),
+                    &state.shelf_camera_error,
+                    &state.scale_camera_error,
+                )
+            } else {
+                base
+            }
+        }
         Screen::Session => session_view(
             &state.i18n,
             &state.categories,
@@ -870,7 +967,7 @@ fn recovery_task(state: &SelfCheckout) -> Task<Message> {
 }
 
 fn maybe_label_baseline_shelf_snapshot_task(state: &SelfCheckout) -> Task<Message> {
-    if state.ml_mode != Some(MlMode::Label) {
+    if state.ml_mode != MlMode::Label {
         return Task::none();
     }
 
@@ -1297,4 +1394,59 @@ fn client_id_path() -> PathBuf {
     env::var("CLIENT_ID_STORAGE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".self-checkout-client-id"))
+}
+
+fn camera_preview_task(state: &SelfCheckout) -> Task<Message> {
+    let shelf_handle = state
+        .shelf_camera_worker
+        .as_ref()
+        .map(|w| w.shared_handle());
+    let scale_handle = state
+        .scale_camera_worker
+        .as_ref()
+        .map(|w| w.shared_handle());
+
+    Task::perform(
+        fetch_preview_frames(shelf_handle, scale_handle),
+        Message::CameraPreviewTick,
+    )
+}
+
+async fn fetch_preview_frames(
+    shelf: Option<SharedCameraHandle>,
+    scale: Option<SharedCameraHandle>,
+) -> PreviewFrames {
+    thread::sleep(Duration::from_millis(200));
+
+    PreviewFrames {
+        shelf: shelf.map(|h| {
+            let frame = h.latest_frame()?;
+            decode_preview_handle(&frame.bytes)
+        }),
+        scale: scale.map(|h| {
+            let frame = h.latest_frame()?;
+            decode_preview_handle(&frame.bytes)
+        }),
+    }
+}
+
+/// Decode image bytes, resize to small preview, and return as RGBA handle.
+fn decode_preview_handle(bytes: &[u8]) -> Result<image::Handle, String> {
+    let img = ::image::load_from_memory(bytes)
+        .map_err(|e| format!("Failed to decode camera frame: {e}"))?;
+
+    // Resize to preview dimensions to minimize GPU texture churn
+    let preview = img.thumbnail(320, 240);
+    let rgba = preview.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    Ok(image::Handle::from_rgba(w, h, rgba.into_raw()))
+}
+
+fn save_current_settings(state: &SelfCheckout) {
+    PersistedSettings::from_state(
+        state.ml_mode,
+        state.selected_shelf_camera.as_ref(),
+        state.selected_scale_camera.as_ref(),
+    )
+    .save();
 }

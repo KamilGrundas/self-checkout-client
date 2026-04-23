@@ -32,5 +32,8 @@
   "place_product_prompt": "Place product on scale or select from list",
   "search_product": "Search product",
   "category_suggested": "Suggested",
-  "classifying": "Identifying product..."
+  "classifying": "Identifying product...",
+  "settings_title": "Settings",
+  "settings_mode": "Mode",
+  "settings_close": "Close"
 }
