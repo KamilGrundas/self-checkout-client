@@ -49,12 +49,17 @@ The client reads configuration from `.env` or environment variables:
 
 ```env
 DEFAULT_LANG=pl
+APP_ENV=dev
 API_BASE_URL=http://127.0.0.1:8000
 CHECKOUT_COUNTER_ID=put-counter-id-here
 CHECKOUT_COUNTER_PASSWORD=put-counter-password-here
 CLIENT_ID_STORAGE_PATH=.self-checkout-client-id
 ML_API_BASE_URL=http://127.0.0.1:8001
 ```
+
+`APP_ENV` controls the window mode:
+- `dev` (default) -> windowed mode
+- `prod` or `production` -> fullscreen mode
 
 ## Run
 

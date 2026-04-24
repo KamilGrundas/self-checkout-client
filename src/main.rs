@@ -16,7 +16,7 @@ use crate::settings::PersistedSettings;
 use crate::ui::primary_button_style;
 
 use iced::widget::{button, column, container, image, text};
-use iced::{Element, Length, Subscription, Task, Theme, application, keyboard};
+use iced::{Element, Length, Subscription, Task, Theme, application, keyboard, window};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -30,7 +30,18 @@ use views::session::session_view;
 use views::settings::settings_overlay;
 
 fn main() -> iced::Result {
+    let _ = dotenvy::dotenv();
+
+    let app_env = env::var("APP_ENV")
+        .unwrap_or_else(|_| "dev".to_string())
+        .to_lowercase();
+    let fullscreen = matches!(app_env.as_str(), "prod" | "production");
+
     application(SelfCheckout::new, update, view)
+        .window(window::Settings {
+            fullscreen,
+            ..window::Settings::default()
+        })
         .theme(app_theme)
         .subscription(subscription)
         .run()

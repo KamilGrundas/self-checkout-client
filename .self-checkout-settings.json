@@ -1,5 +1,5 @@
 {
-  "ml_mode": "label",
+  "ml_mode": "off",
   "shelf_camera_device_id": null,
   "scale_camera_device_id": "0"
 }
