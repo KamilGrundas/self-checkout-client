@@ -35,5 +35,7 @@
   "classifying": "Rozpoznawanie produktu...",
   "settings_title": "Ustawienia",
   "settings_mode": "Tryb",
-  "settings_close": "Zamknij"
+  "settings_close": "Zamknij",
+  "prev_page": "← Poprzednia strona",
+  "next_page": "Następna strona →"
 }

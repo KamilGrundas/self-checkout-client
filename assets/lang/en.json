@@ -35,5 +35,7 @@
   "classifying": "Identifying product...",
   "settings_title": "Settings",
   "settings_mode": "Mode",
-  "settings_close": "Close"
+  "settings_close": "Close",
+  "prev_page": "← Previous page",
+  "next_page": "Next page →"
 }

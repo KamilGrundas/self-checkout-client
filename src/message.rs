@@ -57,6 +57,7 @@ pub enum Message {
     PayPressed,
     PaymentFinished(Result<(Vec<Product>, Vec<crate::product::Category>, CheckoutSession), String>),
     SearchProductPressed,
+    ProductPageChanged(usize),
     ScaleCameraFrameReady(Result<CapturedFrame, String>),
     ClassifyFinished(Result<Vec<(String, f64)>, String>),
 }

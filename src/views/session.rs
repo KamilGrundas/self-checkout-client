@@ -35,6 +35,7 @@ pub fn session_view<'a>(
     product_search_open: bool,
     classifying: bool,
     suggested_product_ids: &'a [String],
+    product_page: usize,
 ) -> Element<'a, Message> {
     // Products grid panel — only built when search is open
     let products_grid_panel = {
@@ -59,42 +60,70 @@ pub fn session_view<'a>(
             suggested_product_ids,
         );
 
-        let mut products_list = column![].spacing(8).width(Length::Fill);
+        const PRODUCTS_PER_PAGE: usize = 15;
+        const COLS: usize = 5;
 
-        for chunk in filtered_products.chunks(5) {
-            let mut tiles_row = row![].spacing(8).width(Length::Fill);
+        let total_pages = if filtered_products.is_empty() {
+            1
+        } else {
+            (filtered_products.len() + PRODUCTS_PER_PAGE - 1) / PRODUCTS_PER_PAGE
+        };
+        let current_page = product_page.min(total_pages.saturating_sub(1));
+        let page_start = current_page * PRODUCTS_PER_PAGE;
+        let page_products = &filtered_products
+            [page_start..filtered_products.len().min(page_start + PRODUCTS_PER_PAGE)];
+
+        let mut products_list = column![]
+            .spacing(8)
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        for chunk in page_products.chunks(COLS) {
+            let mut tiles_row = row![]
+                .spacing(8)
+                .width(Length::Fill)
+                .height(Length::FillPortion(1));
 
             for product in chunk {
                 let image_content: Element<'_, Message> =
                     if let Some(handle) = product_images.get(&product.id) {
                         image(handle.clone())
                             .width(Length::Fill)
-                            .height(Length::Fixed(110.0))
+                            .height(Length::Fill)
                             .into()
                     } else {
                         container(text("..."))
                             .width(Length::Fill)
-                            .height(Length::Fixed(110.0))
+                            .height(Length::Fill)
                             .center_x(Length::Fill)
                             .center_y(Length::Fill)
                             .into()
                     };
 
                 let tile = button(
-                    container(column![image_content, text(&product.name),].spacing(8))
-                        .padding(10)
-                        .width(Length::Fill)
-                        .height(Length::Fixed(220.0)),
+                    container(
+                        column![image_content, text(&product.name)]
+                            .spacing(8)
+                            .height(Length::Fill),
+                    )
+                    .padding(10)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
                 )
                 .width(Length::FillPortion(1))
+                .height(Length::Fill)
                 .style(product_tile_button_style)
                 .on_press(Message::ProductSelected(product.id.clone()));
 
                 tiles_row = tiles_row.push(tile);
             }
 
-            for _ in chunk.len()..5 {
-                tiles_row = tiles_row.push(container(text("")).width(Length::FillPortion(1)));
+            for _ in chunk.len()..COLS {
+                tiles_row = tiles_row.push(
+                    container(text(""))
+                        .width(Length::FillPortion(1))
+                        .height(Length::Fill),
+                );
             }
 
             products_list = products_list.push(tiles_row);
@@ -106,23 +135,54 @@ pub fn session_view<'a>(
             products_list = products_list.push(text(i18n.t("no_products")));
         }
 
+        let page_label = text(format!("{}/{}", current_page + 1, total_pages)).size(24);
+
+        let prev_btn: Element<'_, Message> = if current_page > 0 {
+            button(text(i18n.t("prev_page")).size(22))
+                .style(primary_button_style)
+                .padding([14, 28])
+                .on_press(Message::ProductPageChanged(current_page - 1))
+                .into()
+        } else {
+            button(text(i18n.t("prev_page")).size(22))
+                .style(primary_button_disabled_style)
+                .padding([14, 28])
+                .into()
+        };
+
+        let next_btn: Element<'_, Message> = if current_page + 1 < total_pages {
+            button(text(i18n.t("next_page")).size(22))
+                .style(primary_button_style)
+                .padding([14, 28])
+                .on_press(Message::ProductPageChanged(current_page + 1))
+                .into()
+        } else {
+            button(text(i18n.t("next_page")).size(22))
+                .style(primary_button_disabled_style)
+                .padding([14, 28])
+                .into()
+        };
+
+        let pagination_row = container(
+            row![
+                prev_btn,
+                container(page_label)
+                    .width(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Center),
+                next_btn,
+            ]
+            .align_y(iced::alignment::Vertical::Center)
+            .width(Length::Fill),
+        )
+        .width(Length::Fill);
+
         container(
             column![
                 category_buttons,
-                container(
-                    scrollable(products_list)
-                        .direction(scrollable::Direction::Vertical(
-                            scrollable::Scrollbar::new()
-                                .width(12)
-                                .margin(2)
-                                .scroller_width(12)
-                                .spacing(14),
-                        ))
-                        .style(scrollable_style)
-                        .width(Length::Fill)
-                        .height(Length::Fill),
-                )
-                .width(Length::Fill)
+                container(products_list)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+                pagination_row,
             ]
             .width(Length::Fill)
             .height(Length::Fill)

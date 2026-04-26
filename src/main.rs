@@ -117,6 +117,7 @@ struct SelfCheckout {
     product_search_open: bool,
     classifying: bool,
     suggested_product_ids: Vec<String>,
+    product_page: usize,
 }
 
 impl SelfCheckout {
@@ -191,6 +192,7 @@ impl SelfCheckout {
                 product_search_open: false,
                 classifying: false,
                 suggested_product_ids: Vec::new(),
+                product_page: 0,
             },
             connect_task(
                 api_base_url,
@@ -465,6 +467,11 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
         }
         Message::CategorySelected(category_key) => {
             state.selected_category_key = category_key;
+            state.product_page = 0;
+            Task::none()
+        }
+        Message::ProductPageChanged(page) => {
+            state.product_page = page;
             Task::none()
         }
         Message::QuantityChanged(value) => {
@@ -874,6 +881,7 @@ fn view(state: &SelfCheckout) -> Element<'_, Message> {
             state.product_search_open,
             state.classifying,
             &state.suggested_product_ids,
+            state.product_page,
         ),
     }
 }
