@@ -912,12 +912,14 @@ fn connection_view(state: &SelfCheckout) -> Element<'_, Message> {
 
 fn product_image_tasks(products: &[Product]) -> Task<Message> {
     let tasks = products.iter().filter_map(|product| {
-        product.image_url.clone().map(|image_url| {
-            let product_id = product.id.clone();
-            Task::perform(fetch_image(image_url), move |result| {
-                Message::ProductImageLoaded { product_id, result }
-            })
-        })
+        let url = product
+            .thumbnail_url
+            .clone()
+            .or_else(|| product.image_url.clone())?;
+        let product_id = product.id.clone();
+        Some(Task::perform(fetch_image(url), move |result| {
+            Message::ProductImageLoaded { product_id, result }
+        }))
     });
 
     Task::batch(tasks)

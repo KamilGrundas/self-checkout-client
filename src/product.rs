@@ -12,6 +12,7 @@ pub struct Product {
     pub category_name: String,
     pub category_key: String,
     pub image_url: Option<String>,
+    pub thumbnail_url: Option<String>,
 }
 
 pub type ProductImage = image::Handle;
