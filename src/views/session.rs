@@ -62,6 +62,7 @@ pub fn session_view<'a>(
 
         const PRODUCTS_PER_PAGE: usize = 15;
         const COLS: usize = 5;
+        const ROWS: usize = 3;
 
         let total_pages = if filtered_products.is_empty() {
             1
@@ -127,6 +128,24 @@ pub fn session_view<'a>(
             }
 
             products_list = products_list.push(tiles_row);
+        }
+
+        let rendered_rows = page_products.chunks(COLS).count();
+        for _ in rendered_rows..ROWS {
+            let empty_row = (0..COLS).fold(
+                row![]
+                    .spacing(8)
+                    .width(Length::Fill)
+                    .height(Length::FillPortion(1)),
+                |r, _| {
+                    r.push(
+                        container(text(""))
+                            .width(Length::FillPortion(1))
+                            .height(Length::Fill),
+                    )
+                },
+            );
+            products_list = products_list.push(empty_row);
         }
 
         if loading_products {
