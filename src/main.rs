@@ -15,7 +15,7 @@ use crate::product::{CategoriesResponse, Category, Product, ProductImage, Produc
 use crate::settings::PersistedSettings;
 use crate::ui::primary_button_style;
 
-use iced::widget::{button, column, container, image, text};
+use iced::widget::{button, column, container, image, progress_bar, text};
 use iced::{Element, Length, Subscription, Task, Theme, application, keyboard, window};
 use std::collections::HashMap;
 use std::env;
@@ -52,6 +52,7 @@ enum Screen {
     #[default]
     Connecting,
     Welcome,
+    Loading,
     Session,
 }
 
@@ -118,6 +119,9 @@ struct SelfCheckout {
     classifying: bool,
     suggested_product_ids: Vec<String>,
     product_page: usize,
+    // Image preloading
+    images_total: usize,
+    images_loaded: usize,
 }
 
 impl SelfCheckout {
@@ -193,6 +197,8 @@ impl SelfCheckout {
                 classifying: false,
                 suggested_product_ids: Vec::new(),
                 product_page: 0,
+                images_total: 0,
+                images_loaded: 0,
             },
             connect_task(
                 api_base_url,
@@ -212,8 +218,41 @@ fn app_theme(_: &SelfCheckout) -> Theme {
 fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
     match message {
         Message::StartPressed => {
-            state.screen = Screen::Session;
-            maybe_label_baseline_shelf_snapshot_task(state)
+            let unloaded_count = state
+                .products
+                .iter()
+                .filter(|p| {
+                    (p.thumbnail_url.is_some() || p.image_url.is_some())
+                        && !state.product_images.contains_key(&p.id)
+                })
+                .count();
+
+            if unloaded_count == 0 {
+                state.screen = Screen::Session;
+                return maybe_label_baseline_shelf_snapshot_task(state);
+            }
+
+            state.images_total = unloaded_count;
+            state.images_loaded = 0;
+            state.screen = Screen::Loading;
+
+            let tasks: Vec<Task<Message>> = state
+                .products
+                .iter()
+                .filter(|p| !state.product_images.contains_key(&p.id))
+                .filter_map(|product| {
+                    let url = product
+                        .thumbnail_url
+                        .clone()
+                        .or_else(|| product.image_url.clone())?;
+                    let product_id = product.id.clone();
+                    Some(Task::perform(fetch_image(url), move |result| {
+                        Message::ProductImageLoaded { product_id, result }
+                    }))
+                })
+                .collect();
+
+            Task::batch(tasks)
         }
         Message::ToggleSettings => {
             if !matches!(state.screen, Screen::Welcome) {
@@ -407,7 +446,13 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                     }
                 }
 
-                product_image_tasks(&state.products)
+                // Load images in background only when going directly to Session (non-empty cart).
+                // When going to Welcome, images are deferred until StartPressed.
+                if state.cart.is_empty() {
+                    Task::none()
+                } else {
+                    product_image_tasks(&state.products)
+                }
             }
             Err(error) => {
                 state.loading_products = false;
@@ -569,6 +614,13 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
         Message::ProductImageLoaded { product_id, result } => {
             if let Ok(handle) = result {
                 state.product_images.insert(product_id, handle);
+            }
+            if matches!(state.screen, Screen::Loading) {
+                state.images_loaded += 1;
+                if state.images_loaded >= state.images_total {
+                    state.screen = Screen::Session;
+                    return maybe_label_baseline_shelf_snapshot_task(state);
+                }
             }
             Task::none()
         }
@@ -733,7 +785,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.recovering_connection = false;
                 state.screen = Screen::Welcome;
                 state.status = "Payment completed".to_string();
-                product_image_tasks(&state.products)
+                Task::none()
             }
             Err(error) => {
                 state.status = format!("Payment sync failed: {error}");
@@ -841,6 +893,7 @@ fn subscription(state: &SelfCheckout) -> Subscription<Message> {
 fn view(state: &SelfCheckout) -> Element<'_, Message> {
     match state.screen {
         Screen::Connecting => connection_view(state),
+        Screen::Loading => loading_view(state),
         Screen::Welcome => {
             let base = welcome_view(&state.i18n);
             if state.show_settings {
@@ -901,6 +954,31 @@ fn connection_view(state: &SelfCheckout) -> Element<'_, Message> {
     } else {
         content = content.push(text("Trying 3 times with 3-second intervals..."));
     }
+
+    container(content)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn loading_view(state: &SelfCheckout) -> Element<'_, Message> {
+    let progress = if state.images_total > 0 {
+        state.images_loaded as f32 / state.images_total as f32
+    } else {
+        0.0
+    };
+
+    let content = column![
+        text(state.i18n.t("loading_products")).size(36),
+        progress_bar(0.0..=1.0, progress)
+            .length(Length::Fixed(400.0))
+            .girth(Length::Fixed(16.0)),
+        text(format!("{} / {}", state.images_loaded, state.images_total)).size(20),
+    ]
+    .spacing(24)
+    .align_x(iced::alignment::Horizontal::Center);
 
     container(content)
         .center_x(Length::Fill)
@@ -1244,7 +1322,16 @@ async fn fetch_image(image_url: String) -> Result<ProductImage, String> {
         .bytes()
         .map_err(|error| format!("Failed to read product image: {error}"))?;
 
-    Ok(image::Handle::from_bytes(bytes.to_vec()))
+    // Decode and downscale to at most 256×256 pixels so the decoded RGBA buffer stays
+    // well under Iced's 2 MB synchronous GPU-upload threshold. Images larger than that
+    // threshold are uploaded asynchronously (one per frame), causing the visual
+    // "one-by-one pop-in" effect even when all handles are ready.
+    let img = ::image::load_from_memory(&bytes)
+        .map_err(|e| format!("Failed to decode product image: {e}"))?;
+    let thumb = img.thumbnail(256, 256);
+    let rgba = thumb.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    Ok(image::Handle::from_rgba(w, h, rgba.into_raw()))
 }
 
 async fn upload_snapshot(
