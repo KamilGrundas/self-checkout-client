@@ -8,11 +8,15 @@ mod ui;
 mod views;
 
 use crate::camera::{CameraOption, CameraWorker, CapturedFrame, SharedCameraHandle, list_cameras};
-use crate::checkout::{CartItem, CheckoutSession, ConnectPayload, SyncCartPayload};
+use crate::checkout::{
+    CartItem, CheckoutSession, ConnectPayload, CounterSettingsUpdatePayload, SyncCartPayload,
+};
 use crate::i18n::I18n;
 use crate::message::{Message, PreviewFrames};
 use crate::product::{CategoriesResponse, Category, Product, ProductImage, ProductsResponse};
-use crate::settings::PersistedSettings;
+use crate::settings::{
+    build_settings_payload, find_camera, ml_mode_from_str, settings_from_state,
+};
 use crate::ui::primary_button_style;
 
 use iced::widget::{button, column, container, image, progress_bar, text};
@@ -141,16 +145,6 @@ impl SelfCheckout {
             Err(error) => (Vec::new(), error),
         };
 
-        let persisted = PersistedSettings::load();
-        let selected_shelf_camera = persisted.find_shelf_camera(&cameras).cloned();
-        let selected_scale_camera = persisted.find_scale_camera(&cameras).cloned();
-        let has_camera = selected_shelf_camera.is_some() || selected_scale_camera.is_some();
-        let ml_mode = match persisted.ml_mode_enum() {
-            mode @ (MlMode::On | MlMode::Label) if has_camera => mode,
-            MlMode::On | MlMode::Label => MlMode::Off,
-            mode => mode,
-        };
-
         (
             Self {
                 screen: Screen::Connecting,
@@ -168,7 +162,7 @@ impl SelfCheckout {
                 selected_category_key: "all".to_string(),
                 status: "Connecting to backend...".to_string(),
                 loading_products: true,
-                ml_mode,
+                ml_mode: MlMode::Off,
                 show_settings: false,
                 shelf_preview_handle: None,
                 scale_preview_handle: None,
@@ -181,14 +175,14 @@ impl SelfCheckout {
                 recovering_connection: false,
                 manual_reconnect_available: false,
                 cameras,
-                selected_shelf_camera,
+                selected_shelf_camera: None,
                 shelf_camera_worker: None,
                 shelf_camera_error: camera_error,
                 pending_shelf_capture: None,
                 shelf_ready_enabled: false,
                 last_shelf_snapshot_session_id: None,
                 last_shelf_snapshot_capture_index: None,
-                selected_scale_camera,
+                selected_scale_camera: None,
                 scale_camera_worker: None,
                 scale_camera_error: String::new(),
                 last_scale_snapshot_session_id: None,
@@ -286,9 +280,8 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 }
                 state.shelf_preview_handle = None;
                 state.scale_preview_handle = None;
-                save_current_settings(state);
+                push_settings_task(state)
             }
-            Task::none()
         }
         Message::SettingsModeSelected(mode) => {
             let has_camera =
@@ -297,8 +290,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 return Task::none();
             }
             state.ml_mode = mode;
-            save_current_settings(state);
-            Task::none()
+            push_settings_task(state)
         }
         Message::CameraPreviewTick(frames) => {
             if !state.show_settings {
@@ -360,7 +352,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             state.i18n = I18n::load(&next_language);
             state.quantity_error.clear();
 
-            Task::none()
+            push_settings_task(state)
         }
         Message::CameraSelected(camera) => {
             state.shelf_camera_error.clear();
@@ -372,8 +364,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             }
 
             state.selected_shelf_camera = Some(camera);
-            save_current_settings(state);
-            Task::none()
+            push_settings_task(state)
         }
         Message::ClearShelfCamera => {
             state.shelf_camera_worker = None;
@@ -385,8 +376,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             {
                 state.ml_mode = MlMode::Off;
             }
-            save_current_settings(state);
-            Task::none()
+            push_settings_task(state)
         }
         Message::ScaleCameraSelected(camera) => {
             state.scale_camera_error.clear();
@@ -398,8 +388,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             }
 
             state.selected_scale_camera = Some(camera);
-            save_current_settings(state);
-            Task::none()
+            push_settings_task(state)
         }
         Message::ClearScaleCamera => {
             state.scale_camera_worker = None;
@@ -411,8 +400,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             {
                 state.ml_mode = MlMode::Off;
             }
-            save_current_settings(state);
-            Task::none()
+            push_settings_task(state)
         }
         Message::ConnectionFinished(result) => match result {
             Ok((products, categories, checkout_session)) => {
@@ -423,6 +411,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.categories = categories;
                 state.products = products;
                 state.cart = checkout_session.cart.clone();
+                apply_counter_settings(state, &checkout_session);
                 state.checkout_session = Some(checkout_session.clone());
                 state.screen = if state.cart.is_empty() {
                     Screen::Welcome
@@ -471,6 +460,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.categories = categories;
                 state.products = products;
                 state.cart = checkout_session.cart.clone();
+                apply_counter_settings(state, &checkout_session);
                 state.checkout_session = Some(checkout_session.clone());
                 state.recovering_connection = false;
                 state.connection_failed = false;
@@ -772,6 +762,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             Ok((products, categories, checkout_session)) => {
                 state.categories = categories;
                 state.products = products;
+                apply_counter_settings(state, &checkout_session);
                 state.checkout_session = Some(checkout_session.clone());
                 state.cart.clear();
                 state.selected_category_key = "all".to_string();
@@ -843,6 +834,12 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             };
 
             Task::batch([classify_task, scale_task])
+        }
+        Message::SettingsPushed(result) => {
+            if let Err(error) = result {
+                state.status = format!("Failed to save settings: {error}");
+            }
+            Task::none()
         }
         Message::ClassifyFinished(result) => {
             state.classifying = false;
@@ -1550,11 +1547,64 @@ fn decode_preview_handle(bytes: &[u8]) -> Result<image::Handle, String> {
     Ok(image::Handle::from_rgba(w, h, rgba.into_raw()))
 }
 
-fn save_current_settings(state: &SelfCheckout) {
-    PersistedSettings::from_state(
+fn push_settings_task(state: &SelfCheckout) -> Task<Message> {
+    if state.counter_id.is_empty() || state.counter_password.is_empty() {
+        return Task::none();
+    }
+    let settings = settings_from_state(
         state.ml_mode,
         state.selected_shelf_camera.as_ref(),
         state.selected_scale_camera.as_ref(),
+        &state.current_language,
+    );
+    let payload = build_settings_payload(
+        state.counter_id.clone(),
+        state.counter_password.clone(),
+        &settings,
+    );
+    Task::perform(
+        push_settings(state.api_base_url.clone(), payload),
+        Message::SettingsPushed,
     )
-    .save();
+}
+
+async fn push_settings(
+    api_base_url: String,
+    payload: CounterSettingsUpdatePayload,
+) -> Result<(), String> {
+    reqwest::blocking::Client::new()
+        .put(counter_self_settings_url(&api_base_url))
+        .json(&payload)
+        .send()
+        .map_err(|error| format!("Failed to push settings: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Failed to push settings: {error}"))?;
+    Ok(())
+}
+
+fn counter_self_settings_url(api_base_url: &str) -> String {
+    format!("{}/checkout-counters/me/settings", api_v1_base(api_base_url))
+}
+
+fn apply_counter_settings(state: &mut SelfCheckout, session: &CheckoutSession) {
+    let settings = &session.counter_settings;
+
+    if !settings.language.is_empty() && settings.language != state.current_language {
+        state.current_language = settings.language.clone();
+        state.i18n = I18n::load(&settings.language);
+    }
+
+    state.selected_shelf_camera =
+        find_camera(settings.shelf_camera_device_id.as_deref(), &state.cameras).cloned();
+    state.selected_scale_camera =
+        find_camera(settings.scale_camera_device_id.as_deref(), &state.cameras).cloned();
+
+    let has_camera =
+        state.selected_shelf_camera.is_some() || state.selected_scale_camera.is_some();
+    let desired = ml_mode_from_str(&settings.ml_mode);
+    state.ml_mode = match desired {
+        mode @ (MlMode::On | MlMode::Label) if has_camera => mode,
+        MlMode::On | MlMode::Label => MlMode::Off,
+        mode => mode,
+    };
 }

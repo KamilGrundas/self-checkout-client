@@ -60,4 +60,5 @@ pub enum Message {
     ProductPageChanged(usize),
     ScaleCameraFrameReady(Result<CapturedFrame, String>),
     ClassifyFinished(Result<Vec<(String, f64)>, String>),
+    SettingsPushed(Result<(), String>),
 }
