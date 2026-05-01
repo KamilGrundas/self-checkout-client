@@ -6,6 +6,7 @@ mod product;
 mod settings;
 mod ui;
 mod views;
+mod ws;
 
 use crate::camera::{CameraOption, CameraWorker, CapturedFrame, SharedCameraHandle, list_cameras};
 use crate::checkout::{
@@ -18,6 +19,7 @@ use crate::settings::{
     build_settings_payload, find_camera, ml_mode_from_str, settings_from_state,
 };
 use crate::ui::primary_button_style;
+use crate::ws::{WsConfig, WsEvent};
 
 use iced::widget::{button, column, container, image, progress_bar, text};
 use iced::{Element, Length, Subscription, Task, Theme, application, keyboard, window};
@@ -126,6 +128,7 @@ struct SelfCheckout {
     // Image preloading
     images_total: usize,
     images_loaded: usize,
+    admin_takeover: bool,
 }
 
 impl SelfCheckout {
@@ -193,6 +196,7 @@ impl SelfCheckout {
                 product_page: 0,
                 images_total: 0,
                 images_loaded: 0,
+                admin_takeover: false,
             },
             connect_task(
                 api_base_url,
@@ -835,6 +839,50 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
 
             Task::batch([classify_task, scale_task])
         }
+        Message::WsEvent(event) => match event {
+            WsEvent::Connected => {
+                state.recovering_connection = false;
+                state.connection_failed = false;
+                state.manual_reconnect_available = false;
+                if state.status.starts_with("Connection lost") {
+                    state.status.clear();
+                }
+                Task::none()
+            }
+            WsEvent::Disconnected => {
+                if state.checkout_session.is_some() {
+                    state.recovering_connection = true;
+                    state.connection_failed = false;
+                    state.manual_reconnect_available = false;
+                    state.status = "Connection lost — reconnecting...".to_string();
+                }
+                Task::none()
+            }
+            WsEvent::SessionUpdated {
+                session,
+                admin_takeover,
+            } => {
+                let was_closed_remotely =
+                    session.closed && state.checkout_session.as_ref().is_some_and(|s| !s.closed);
+                state.cart = session.cart.clone();
+                apply_counter_settings(state, &session);
+                state.checkout_session = Some(session);
+                state.recovering_connection = false;
+                state.connection_failed = false;
+                state.manual_reconnect_available = false;
+                state.admin_takeover = admin_takeover;
+                if was_closed_remotely {
+                    // Backend force-closes the WS after cancel; on reconnect
+                    // the server creates a fresh session and pushes it via
+                    // the next session_state, which replaces checkout_session.
+                    state.cart.clear();
+                    state.admin_takeover = false;
+                    state.screen = Screen::Welcome;
+                    state.status = "Session closed by admin".to_string();
+                }
+                Task::none()
+            }
+        },
         Message::SettingsPushed(result) => {
             if let Err(error) = result {
                 state.status = format!("Failed to save settings: {error}");
@@ -874,7 +922,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
 }
 
 fn subscription(state: &SelfCheckout) -> Subscription<Message> {
-    if matches!(state.screen, Screen::Welcome) && !state.show_settings {
+    let keyboard_sub = if matches!(state.screen, Screen::Welcome) && !state.show_settings {
         keyboard::listen().filter_map(|event| match event {
             keyboard::Event::KeyPressed {
                 key: keyboard::Key::Character(ref c),
@@ -884,10 +932,55 @@ fn subscription(state: &SelfCheckout) -> Subscription<Message> {
         })
     } else {
         Subscription::none()
-    }
+    };
+
+    let ws_sub = if state.checkout_session.is_some()
+        && !state.counter_id.is_empty()
+        && !state.counter_password.is_empty()
+    {
+        ws::subscription(WsConfig {
+            api_base_url: state.api_base_url.clone(),
+            counter_id: state.counter_id.clone(),
+            counter_password: state.counter_password.clone(),
+            client_id: state.client_id.clone(),
+        })
+    } else {
+        Subscription::none()
+    };
+
+    Subscription::batch([keyboard_sub, ws_sub])
 }
 
 fn view(state: &SelfCheckout) -> Element<'_, Message> {
+    let inner = inner_view(state);
+    if state.admin_takeover {
+        column![admin_takeover_banner(&state.i18n), inner]
+            .spacing(0)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    } else {
+        inner
+    }
+}
+
+fn admin_takeover_banner(i18n: &I18n) -> Element<'_, Message> {
+    let label = i18n.t_or("admin_takeover_banner", "Admin is assisting this session");
+    container(text(label).size(20))
+        .padding(12)
+        .center_x(Length::Fill)
+        .style(|theme: &Theme| {
+            let palette = theme.extended_palette();
+            container::Style {
+                background: Some(palette.warning.weak.color.into()),
+                text_color: Some(palette.warning.weak.text),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+fn inner_view(state: &SelfCheckout) -> Element<'_, Message> {
     match state.screen {
         Screen::Connecting => connection_view(state),
         Screen::Loading => loading_view(state),

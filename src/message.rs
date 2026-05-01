@@ -1,6 +1,7 @@
 use crate::camera::{CameraOption, CapturedFrame};
 use crate::checkout::CheckoutSession;
 use crate::product::{Product, ProductImage};
+use crate::ws::WsEvent;
 
 /// Decoded camera preview frames ready for display.
 #[derive(Debug, Clone)]
@@ -61,4 +62,5 @@ pub enum Message {
     ScaleCameraFrameReady(Result<CapturedFrame, String>),
     ClassifyFinished(Result<Vec<(String, f64)>, String>),
     SettingsPushed(Result<(), String>),
+    WsEvent(WsEvent),
 }

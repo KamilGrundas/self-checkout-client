@@ -1,4 +1,5 @@
 {
+  "admin_takeover_banner": "Pracownik obsługuje tę sesję — koszyk może zostać zmieniony zdalnie",
   "start": "Dotknij aby rozpocząć",
   "choose_mode": "Wybierz tryb",
   "all": "Wszystkie",
