@@ -75,19 +75,22 @@ pub fn subscription(config: WsConfig) -> Subscription<Message> {
 
 fn build_stream(config: &WsConfig) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
     let config = config.clone();
-    Box::pin(stream::channel(32, move |mut output: IcedSender<Message>| async move {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+    Box::pin(stream::channel(
+        32,
+        move |mut output: IcedSender<Message>| async move {
+            let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
-        tokio_runtime().spawn(async move {
-            run_connection_loop(config, tx).await;
-        });
+            tokio_runtime().spawn(async move {
+                run_connection_loop(config, tx).await;
+            });
 
-        while let Some(msg) = rx.recv().await {
-            if output.send(msg).await.is_err() {
-                break;
+            while let Some(msg) = rx.recv().await {
+                if output.send(msg).await.is_err() {
+                    break;
+                }
             }
-        }
-    }))
+        },
+    ))
 }
 
 async fn run_connection_loop(config: WsConfig, tx: mpsc::UnboundedSender<Message>) {
@@ -124,9 +127,8 @@ async fn run_connection_loop(config: WsConfig, tx: mpsc::UnboundedSender<Message
 
 async fn pump<S>(stream: S, output: &mpsc::UnboundedSender<Message>)
 where
-    S: futures_util::Stream<
-            Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>,
-        > + futures_util::Sink<WsMessage, Error = tokio_tungstenite::tungstenite::Error>
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + futures_util::Sink<WsMessage, Error = tokio_tungstenite::tungstenite::Error>
         + Unpin,
 {
     let (mut sink, mut source) = stream.split();
@@ -164,7 +166,7 @@ where
                             let _ = sink.send(WsMessage::Text("pong".into())).await;
                         }
                         ServerMessage::Error {} => {}
-                    }
+                    },
                 }
             }
             Ok(Some(Ok(WsMessage::Ping(payload)))) => {

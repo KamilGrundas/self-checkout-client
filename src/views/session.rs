@@ -11,6 +11,7 @@ use iced::widget::{
     button, column, container, image, opaque, row, scrollable, stack, text, text_input,
 };
 use iced::{Color, Element, Length};
+use iced_aw::Spinner;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -36,6 +37,8 @@ pub fn session_view<'a>(
     classifying: bool,
     suggested_product_ids: &'a [String],
     product_page: usize,
+    show_payment_method_modal: bool,
+    show_payment_processing_modal: bool,
 ) -> Element<'a, Message> {
     // Products grid panel — only built when search is open
     let products_grid_panel = {
@@ -395,6 +398,10 @@ pub fn session_view<'a>(
         )
     } else if show_shelf_placement_prompt {
         ml_label_prompt_view(i18n, base, shelf_ready_enabled)
+    } else if show_payment_method_modal {
+        payment_method_view(i18n, base)
+    } else if show_payment_processing_modal {
+        payment_processing_view(i18n, base)
     } else {
         base
     };
@@ -404,6 +411,135 @@ pub fn session_view<'a>(
     } else {
         content
     }
+}
+
+fn payment_method_view<'a>(i18n: &'a I18n, base: Element<'a, Message>) -> Element<'a, Message> {
+    let dim = container("")
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| {
+            iced::widget::container::Style::default()
+                .background(Color::from_rgba(0.0, 0.0, 0.0, 0.6))
+        });
+
+    let card_image: Element<'_, Message> = if Path::new("assets/ui/credit-card.png").exists() {
+        image("assets/ui/credit-card.png")
+            .width(Length::Fixed(120.0))
+            .height(Length::Fixed(120.0))
+            .into()
+    } else {
+        text("CARD").size(48).into()
+    };
+
+    let modal = container(
+        column![
+            text(i18n.t("payment_choose_method")).size(30),
+            button(
+                container(
+                    column![card_image, text(i18n.t("payment_method_card")).size(24)]
+                        .spacing(12)
+                        .align_x(iced::alignment::Horizontal::Center),
+                )
+                .width(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+            )
+            .style(action_button_style)
+            .padding([20, 24])
+            .width(Length::Fill)
+            .height(Length::Fixed(280.0))
+            .on_press(Message::PaymentMethodSelected),
+            button(
+                container(text(i18n.t("payment_back")).size(24))
+                    .width(Length::Fill)
+                    .center_x(Length::Fill),
+            )
+            .style(danger_button_style)
+            .padding([18, 24])
+            .width(Length::Fill)
+            .on_press(Message::PaymentMethodBackPressed),
+        ]
+        .spacing(20)
+        .padding(24),
+    )
+    .width(Length::Fixed(560.0))
+    .style(iced::widget::container::rounded_box);
+
+    stack([
+        base,
+        stack([
+            opaque(dim),
+            container(modal)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+        ])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into(),
+    ])
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+fn payment_processing_view<'a>(i18n: &'a I18n, base: Element<'a, Message>) -> Element<'a, Message> {
+    let dim = container("")
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| {
+            iced::widget::container::Style::default()
+                .background(Color::from_rgba(0.0, 0.0, 0.0, 0.6))
+        });
+
+    let modal = container(
+        column![
+            container(
+                Spinner::new()
+                    .width(Length::Fixed(80.0))
+                    .height(Length::Fixed(80.0))
+                    .circle_radius(6.0)
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+            column![
+                text(i18n.t("payment_follow_terminal")).size(28),
+                text(i18n.t("payment_terminal_hint")).size(18),
+            ]
+            .spacing(6)
+            .align_x(iced::alignment::Horizontal::Center),
+        ]
+        .spacing(12)
+        .padding([56, 24])
+        .height(Length::Fixed(340.0))
+        .width(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Center),
+    )
+    .width(Length::Fixed(640.0))
+    .style(iced::widget::container::rounded_box);
+
+    stack([
+        base,
+        stack([
+            opaque(dim),
+            container(modal)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into(),
+        ])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into(),
+    ])
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 fn ml_label_prompt_view<'a>(

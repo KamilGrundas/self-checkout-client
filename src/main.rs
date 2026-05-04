@@ -15,10 +15,8 @@ use crate::checkout::{
 use crate::i18n::I18n;
 use crate::message::{Message, PreviewFrames};
 use crate::product::{CategoriesResponse, Category, Product, ProductImage, ProductsResponse};
-use crate::settings::{
-    build_settings_payload, find_camera, ml_mode_from_str, settings_from_state,
-};
-use crate::ui::primary_button_style;
+use crate::settings::{build_settings_payload, find_camera, ml_mode_from_str, settings_from_state};
+use crate::ui::{floating_panel_style, primary_button_style};
 use crate::ws::{WsConfig, WsEvent};
 
 use iced::widget::{button, column, container, image, progress_bar, text};
@@ -60,6 +58,14 @@ enum Screen {
     Welcome,
     Loading,
     Session,
+    PaymentSuccess,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaymentOverlay {
+    None,
+    MethodSelection,
+    TerminalProcessing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +135,7 @@ struct SelfCheckout {
     images_total: usize,
     images_loaded: usize,
     admin_takeover: bool,
+    payment_overlay: PaymentOverlay,
 }
 
 impl SelfCheckout {
@@ -197,6 +204,7 @@ impl SelfCheckout {
                 images_total: 0,
                 images_loaded: 0,
                 admin_takeover: false,
+                payment_overlay: PaymentOverlay::None,
             },
             connect_task(
                 api_base_url,
@@ -412,6 +420,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.connection_failed = false;
                 state.manual_reconnect_available = false;
                 state.status = "Connected".to_string();
+                state.payment_overlay = PaymentOverlay::None;
                 state.categories = categories;
                 state.products = products;
                 state.cart = checkout_session.cart.clone();
@@ -470,6 +479,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.connection_failed = false;
                 state.manual_reconnect_available = false;
                 state.status = "Connection restored".to_string();
+                state.payment_overlay = PaymentOverlay::None;
                 product_image_tasks(&state.products)
             }
             Err(error) => {
@@ -753,21 +763,34 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 return Task::none();
             }
 
-            state.status = "Finishing payment...".to_string();
-            connect_after_payment_task(
-                state.api_base_url.clone(),
-                state.counter_id.clone(),
-                state.counter_password.clone(),
-                state.client_id.clone(),
-                checkout_session.id,
-            )
+            let _ = checkout_session;
+            state.payment_overlay = PaymentOverlay::MethodSelection;
+            Task::none()
         }
-        Message::PaymentFinished(result) => match result {
-            Ok((products, categories, checkout_session)) => {
-                state.categories = categories;
-                state.products = products;
-                apply_counter_settings(state, &checkout_session);
-                state.checkout_session = Some(checkout_session.clone());
+        Message::PaymentMethodSelected => {
+            if state.recovering_connection || state.cart.is_empty() {
+                return Task::none();
+            }
+
+            state.payment_overlay = PaymentOverlay::TerminalProcessing;
+            state.status = state.i18n.t_or(
+                "payment_follow_terminal",
+                "Please follow terminal instructions",
+            );
+            Task::none()
+        }
+        Message::PaymentMethodBackPressed => {
+            if state.payment_overlay == PaymentOverlay::MethodSelection {
+                state.payment_overlay = PaymentOverlay::None;
+            }
+            Task::none()
+        }
+        Message::PaymentTerminalDecision(success) => {
+            if state.payment_overlay != PaymentOverlay::TerminalProcessing {
+                return Task::none();
+            }
+
+            if success {
                 state.cart.clear();
                 state.selected_category_key = "all".to_string();
                 state.selected_product = None;
@@ -778,18 +801,26 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.classifying = false;
                 state.suggested_product_ids.clear();
                 state.recovering_connection = false;
+                state.payment_overlay = PaymentOverlay::None;
+                state.screen = Screen::PaymentSuccess;
+                state.status = state.i18n.t_or("payment_success", "Thank you for shopping");
+                return Task::perform(wait_payment_success_timeout(), |_| {
+                    Message::PaymentSuccessTimeout
+                });
+            } else {
+                state.payment_overlay = PaymentOverlay::MethodSelection;
+                state.status = state
+                    .i18n
+                    .t_or("payment_failed", "Payment failed. Please try again");
+            }
+            Task::none()
+        }
+        Message::PaymentSuccessTimeout => {
+            if matches!(state.screen, Screen::PaymentSuccess) {
                 state.screen = Screen::Welcome;
-                state.status = "Payment completed".to_string();
-                Task::none()
             }
-            Err(error) => {
-                state.status = format!("Payment sync failed: {error}");
-                state.recovering_connection = true;
-                state.connection_failed = false;
-                state.manual_reconnect_available = false;
-                recovery_task(state)
-            }
-        },
+            Task::none()
+        }
         Message::SearchProductPressed => {
             state.suggested_product_ids.clear();
             if state.ml_mode == MlMode::On {
@@ -922,7 +953,19 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
 }
 
 fn subscription(state: &SelfCheckout) -> Subscription<Message> {
-    let keyboard_sub = if matches!(state.screen, Screen::Welcome) && !state.show_settings {
+    let keyboard_sub = if state.payment_overlay == PaymentOverlay::TerminalProcessing {
+        keyboard::listen().filter_map(|event| match event {
+            keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character(ref c),
+                ..
+            } if c.eq_ignore_ascii_case("y") => Some(Message::PaymentTerminalDecision(true)),
+            keyboard::Event::KeyPressed {
+                key: keyboard::Key::Character(ref c),
+                ..
+            } if c.eq_ignore_ascii_case("n") => Some(Message::PaymentTerminalDecision(false)),
+            _ => None,
+        })
+    } else if matches!(state.screen, Screen::Welcome) && !state.show_settings {
         keyboard::listen().filter_map(|event| match event {
             keyboard::Event::KeyPressed {
                 key: keyboard::Key::Character(ref c),
@@ -1025,8 +1068,42 @@ fn inner_view(state: &SelfCheckout) -> Element<'_, Message> {
             state.classifying,
             &state.suggested_product_ids,
             state.product_page,
+            state.payment_overlay == PaymentOverlay::MethodSelection,
+            state.payment_overlay == PaymentOverlay::TerminalProcessing,
         ),
+        Screen::PaymentSuccess => payment_success_view(state),
     }
+}
+
+fn payment_success_view(state: &SelfCheckout) -> Element<'_, Message> {
+    let panel_content = column![
+        text(state.i18n.t("payment_success")).size(54),
+        text(
+            state
+                .i18n
+                .t_or("payment_see_you_again", "Zapraszamy ponownie")
+        )
+        .size(34),
+    ]
+    .spacing(16)
+    .align_x(iced::alignment::Horizontal::Center);
+
+    let panel = container(panel_content)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(floating_panel_style);
+
+    container(panel)
+        .padding(16)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+async fn wait_payment_success_timeout() {
+    thread::sleep(Duration::from_secs(5));
 }
 
 fn connection_view(state: &SelfCheckout) -> Element<'_, Message> {
@@ -1103,25 +1180,6 @@ fn connect_task(
     Task::perform(
         connect_backend(api_base_url, counter_id, counter_password, client_id),
         message,
-    )
-}
-
-fn connect_after_payment_task(
-    api_base_url: String,
-    counter_id: String,
-    counter_password: String,
-    client_id: String,
-    session_id: String,
-) -> Task<Message> {
-    Task::perform(
-        pay_and_reconnect(
-            api_base_url,
-            counter_id,
-            counter_password,
-            client_id,
-            session_id,
-        ),
-        Message::PaymentFinished,
     )
 }
 
@@ -1357,31 +1415,6 @@ async fn sync_cart(
         .map_err(|error| format!("Failed to decode checkout session: {error}"))
 }
 
-async fn pay_and_reconnect(
-    api_base_url: String,
-    counter_id: String,
-    counter_password: String,
-    client_id: String,
-    session_id: String,
-) -> Result<(Vec<Product>, Vec<Category>, CheckoutSession), String> {
-    let client = reqwest::blocking::Client::new();
-    let payload = ConnectPayload {
-        counter_id: counter_id.clone(),
-        password: counter_password.clone(),
-        client_id: client_id.clone(),
-    };
-
-    client
-        .post(session_pay_url(&api_base_url, &session_id))
-        .json(&payload)
-        .send()
-        .map_err(|error| format!("Failed to finish payment: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Failed to finish payment: {error}"))?;
-
-    connect_backend(api_base_url, counter_id, counter_password, client_id).await
-}
-
 fn fetch_products_blocking(api_base_url: &str) -> Result<Vec<Product>, String> {
     reqwest::blocking::get(products_url(api_base_url))
         .map_err(|error| format!("Failed to fetch products: {error}"))?
@@ -1540,13 +1573,6 @@ fn session_cart_url(api_base_url: &str, session_id: &str) -> String {
     )
 }
 
-fn session_pay_url(api_base_url: &str, session_id: &str) -> String {
-    format!(
-        "{}/checkout-sessions/{session_id}/pay",
-        api_v1_base(api_base_url)
-    )
-}
-
 fn ml_api_v1_base(api_base_url: &str) -> String {
     let trimmed = api_base_url.trim_end_matches('/');
     if trimmed.ends_with("/api/v1") {
@@ -1676,7 +1702,10 @@ async fn push_settings(
 }
 
 fn counter_self_settings_url(api_base_url: &str) -> String {
-    format!("{}/checkout-counters/me/settings", api_v1_base(api_base_url))
+    format!(
+        "{}/checkout-counters/me/settings",
+        api_v1_base(api_base_url)
+    )
 }
 
 fn apply_counter_settings(state: &mut SelfCheckout, session: &CheckoutSession) {
@@ -1692,8 +1721,7 @@ fn apply_counter_settings(state: &mut SelfCheckout, session: &CheckoutSession) {
     state.selected_scale_camera =
         find_camera(settings.scale_camera_device_id.as_deref(), &state.cameras).cloned();
 
-    let has_camera =
-        state.selected_shelf_camera.is_some() || state.selected_scale_camera.is_some();
+    let has_camera = state.selected_shelf_camera.is_some() || state.selected_scale_camera.is_some();
     let desired = ml_mode_from_str(&settings.ml_mode);
     state.ml_mode = match desired {
         mode @ (MlMode::On | MlMode::Label) if has_camera => mode,
