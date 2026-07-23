@@ -22,4 +22,11 @@ impl I18n {
             .cloned()
             .unwrap_or_else(|| key.to_string())
     }
+
+    pub fn t_or(&self, key: &str, fallback: &str) -> String {
+        self.translations
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| fallback.to_string())
+    }
 }

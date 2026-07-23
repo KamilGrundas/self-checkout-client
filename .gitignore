@@ -1,2 +1,7 @@
 /target
 .env
+.self-checkout-client-id
+.DS_Store
+.idea
+.vscode
+.cache/
