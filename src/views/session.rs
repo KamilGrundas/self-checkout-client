@@ -15,6 +15,7 @@ use iced_aw::Spinner;
 use std::collections::HashMap;
 use std::path::Path;
 
+#[allow(clippy::too_many_arguments)]
 pub fn session_view<'a>(
     i18n: &'a I18n,
     categories: &'a [Category],
@@ -70,7 +71,7 @@ pub fn session_view<'a>(
         let total_pages = if filtered_products.is_empty() {
             1
         } else {
-            (filtered_products.len() + PRODUCTS_PER_PAGE - 1) / PRODUCTS_PER_PAGE
+            filtered_products.len().div_ceil(PRODUCTS_PER_PAGE)
         };
         let current_page = product_page.min(total_pages.saturating_sub(1));
         let page_start = current_page * PRODUCTS_PER_PAGE;

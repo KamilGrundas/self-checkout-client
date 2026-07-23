@@ -48,6 +48,7 @@ impl Hash for WsConfig {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum WsEvent {
     Connected,
     Disconnected,
@@ -59,6 +60,7 @@ pub enum WsEvent {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 enum ServerMessage {
     SessionState {
         session: CheckoutSession,

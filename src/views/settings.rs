@@ -11,6 +11,7 @@ use iced::widget::{
 };
 use iced::{Color, Element, Length};
 
+#[allow(clippy::too_many_arguments)]
 pub fn settings_overlay<'a>(
     i18n: &'a I18n,
     base: Element<'a, Message>,
