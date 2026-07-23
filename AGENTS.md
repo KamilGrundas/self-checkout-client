@@ -8,6 +8,6 @@ Checks are `cargo fmt --check`, `cargo check`, `cargo test`, and, when configure
 
 Run validation on remote dev via `../ops/dev-sync.sh --repo client --dry-run` and `../ops/dev-test.sh --repo client`. Keep commits focused and imperative; coordinate API contract changes with backend and ML PRs.
 
-The temporary base branch is `dev` as recorded in `../repos.yaml`; the target base after migration is `main`. Never implement directly on `dev`, `main`, or `master`. Use Conventional Commits with scopes such as `client`, `ui`, `checkout`, `camera`, `settings`, or `websocket`.
+The base branch is `main` as recorded in `../repos.yaml`. Create short-lived branches from a freshly fetched `origin/main`, and never implement directly on `main` or `master`. Use Conventional Commits with scopes such as `client`, `ui`, `checkout`, `camera`, `settings`, or `websocket`.
 
 Definition of Done: rustfmt, `cargo check`, and `cargo test` pass on remote dev; Clippy is run when the target supports it; the integrated healthcheck passes; Polish and English translations remain aligned; hardware-dependent behavior is explicitly marked as tested or not tested; and API/configuration impact and rollback are documented.
