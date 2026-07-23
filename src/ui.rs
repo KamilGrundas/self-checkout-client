@@ -249,7 +249,7 @@ pub fn scrollable_style(theme: &Theme, status: scrollable::Status) -> scrollable
         ..active_rail
     };
 
-    let style = match status {
+    match status {
         scrollable::Status::Hovered {
             is_horizontal_scrollbar_hovered,
             is_vertical_scrollbar_hovered,
@@ -295,9 +295,7 @@ pub fn scrollable_style(theme: &Theme, status: scrollable::Status) -> scrollable
             gap: Some(Background::Color(Color::TRANSPARENT)),
             auto_scroll: scrollable::default(theme, status).auto_scroll,
         },
-    };
-
-    style
+    }
 }
 
 pub fn floating_panel_style(_: &Theme) -> container::Style {

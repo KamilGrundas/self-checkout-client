@@ -269,21 +269,19 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
 
             if state.show_settings {
                 // Start camera workers (non-blocking)
-                if let Some(shelf_camera) = state.selected_shelf_camera.clone() {
-                    if state.shelf_camera_worker.is_none() {
-                        state.shelf_camera_worker =
-                            Some(CameraWorker::start_nonblocking(shelf_camera));
-                        state.shelf_camera_error.clear();
-                    }
+                if let Some(shelf_camera) = state.selected_shelf_camera.clone()
+                    && state.shelf_camera_worker.is_none()
+                {
+                    state.shelf_camera_worker = Some(CameraWorker::start_nonblocking(shelf_camera));
+                    state.shelf_camera_error.clear();
                 }
-                if let Some(scale_camera) = state.selected_scale_camera.clone() {
-                    if state.scale_camera_worker.is_none() {
-                        state.scale_camera_worker =
-                            Some(CameraWorker::start_nonblocking(scale_camera));
-                        state.scale_camera_error.clear();
-                    }
+                if let Some(scale_camera) = state.selected_scale_camera.clone()
+                    && state.scale_camera_worker.is_none()
+                {
+                    state.scale_camera_worker = Some(CameraWorker::start_nonblocking(scale_camera));
+                    state.scale_camera_error.clear();
                 }
-                return camera_preview_task(state);
+                camera_preview_task(state)
             } else {
                 // Closing settings — stop workers if mode is Off
                 if state.ml_mode == MlMode::Off {
@@ -434,17 +432,17 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
 
                 // Start camera workers if mode requires them
                 if state.ml_mode != MlMode::Off {
-                    if let Some(shelf_camera) = state.selected_shelf_camera.clone() {
-                        if state.shelf_camera_worker.is_none() {
-                            state.shelf_camera_worker =
-                                Some(CameraWorker::start_nonblocking(shelf_camera));
-                        }
+                    if let Some(shelf_camera) = state.selected_shelf_camera.clone()
+                        && state.shelf_camera_worker.is_none()
+                    {
+                        state.shelf_camera_worker =
+                            Some(CameraWorker::start_nonblocking(shelf_camera));
                     }
-                    if let Some(scale_camera) = state.selected_scale_camera.clone() {
-                        if state.scale_camera_worker.is_none() {
-                            state.scale_camera_worker =
-                                Some(CameraWorker::start_nonblocking(scale_camera));
-                        }
+                    if let Some(scale_camera) = state.selected_scale_camera.clone()
+                        && state.scale_camera_worker.is_none()
+                    {
+                        state.scale_camera_worker =
+                            Some(CameraWorker::start_nonblocking(scale_camera));
                     }
                 }
 
@@ -823,15 +821,15 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
         }
         Message::SearchProductPressed => {
             state.suggested_product_ids.clear();
-            if state.ml_mode == MlMode::On {
-                if let Some(camera_worker) = state.scale_camera_worker.as_ref() {
-                    state.classifying = true;
-                    let handle = camera_worker.shared_handle();
-                    return Task::perform(
-                        async move { handle.capture_fresh() },
-                        Message::ScaleCameraFrameReady,
-                    );
-                }
+            if state.ml_mode == MlMode::On
+                && let Some(camera_worker) = state.scale_camera_worker.as_ref()
+            {
+                state.classifying = true;
+                let handle = camera_worker.shared_handle();
+                return Task::perform(
+                    async move { handle.capture_fresh() },
+                    Message::ScaleCameraFrameReady,
+                );
             }
             state.product_search_open = true;
             Task::none()
@@ -1170,12 +1168,15 @@ fn product_image_tasks(products: &[Product]) -> Task<Message> {
     Task::batch(tasks)
 }
 
+type ConnectResult = Result<(Vec<Product>, Vec<Category>, CheckoutSession), String>;
+type ConnectMessage = fn(ConnectResult) -> Message;
+
 fn connect_task(
     api_base_url: String,
     counter_id: String,
     counter_password: String,
     client_id: String,
-    message: fn(Result<(Vec<Product>, Vec<Category>, CheckoutSession), String>) -> Message,
+    message: ConnectMessage,
 ) -> Task<Message> {
     Task::perform(
         connect_backend(api_base_url, counter_id, counter_password, client_id),

@@ -187,10 +187,10 @@ fn camera_worker_loop(
     frame_revision: Arc<AtomicU64>,
     stop_flag: Arc<AtomicBool>,
 ) {
-    if let Err(error) = camera_stream_loop(camera, latest_frame, frame_revision, stop_flag) {
-        if let Ok(mut error_guard) = last_error.lock() {
-            *error_guard = Some(error);
-        }
+    if let Err(error) = camera_stream_loop(camera, latest_frame, frame_revision, stop_flag)
+        && let Ok(mut error_guard) = last_error.lock()
+    {
+        *error_guard = Some(error);
     }
 }
 
