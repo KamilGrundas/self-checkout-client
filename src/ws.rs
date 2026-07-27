@@ -1,3 +1,4 @@
+use crate::camera::CameraOption;
 use crate::checkout::CheckoutSession;
 use crate::message::Message;
 use futures_util::{SinkExt, StreamExt};
@@ -37,6 +38,7 @@ pub struct WsConfig {
     pub counter_id: String,
     pub counter_password: String,
     pub client_id: String,
+    pub available_cameras: Vec<CameraOption>,
 }
 
 impl Hash for WsConfig {
@@ -44,6 +46,7 @@ impl Hash for WsConfig {
         self.api_base_url.hash(state);
         self.counter_id.hash(state);
         self.client_id.hash(state);
+        self.available_cameras.hash(state);
     }
 }
 
@@ -97,7 +100,7 @@ fn build_stream(config: &WsConfig) -> Pin<Box<dyn Stream<Item = Message> + Send>
 
 async fn run_connection_loop(config: WsConfig, tx: mpsc::UnboundedSender<Message>) {
     let url = ws_url(&config);
-    eprintln!("[ws] connecting to {url}");
+    eprintln!("[ws] connecting to checkout session websocket");
     let mut delay = RECONNECT_BASE_DELAY_SECS;
 
     loop {
@@ -108,7 +111,29 @@ async fn run_connection_loop(config: WsConfig, tx: mpsc::UnboundedSender<Message
                 if tx.send(Message::WsEvent(WsEvent::Connected)).is_err() {
                     return;
                 }
-                pump(stream, &tx).await;
+                let (available_cameras, camera_discovery_succeeded) =
+                    match tokio::task::spawn_blocking(crate::camera::list_cameras).await {
+                        Ok(Ok(cameras)) => (cameras, true),
+                        Ok(Err(error)) => {
+                            eprintln!(
+                                "[ws] camera discovery failed: {error}; preserving {} previously discovered cameras",
+                                config.available_cameras.len()
+                            );
+                            (config.available_cameras.clone(), false)
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "[ws] camera discovery task failed: {error}; preserving {} previously discovered cameras",
+                                config.available_cameras.len()
+                            );
+                            (config.available_cameras.clone(), false)
+                        }
+                    };
+                eprintln!(
+                    "[ws] reporting {} available cameras",
+                    available_cameras.len()
+                );
+                pump(stream, &tx, &available_cameras, camera_discovery_succeeded).await;
                 eprintln!("[ws] pump exited, reconnecting in {delay}s");
                 if tx.send(Message::WsEvent(WsEvent::Disconnected)).is_err() {
                     return;
@@ -127,14 +152,30 @@ async fn run_connection_loop(config: WsConfig, tx: mpsc::UnboundedSender<Message
     }
 }
 
-async fn pump<S>(stream: S, output: &mpsc::UnboundedSender<Message>)
-where
+async fn pump<S>(
+    stream: S,
+    output: &mpsc::UnboundedSender<Message>,
+    available_cameras: &[CameraOption],
+    camera_discovery_succeeded: bool,
+) where
     S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
         + futures_util::Sink<WsMessage, Error = tokio_tungstenite::tungstenite::Error>
         + Unpin,
 {
     let (mut sink, mut source) = stream.split();
     let mut last_seen = Instant::now();
+    let camera_report = serde_json::json!({
+        "type": "available_cameras",
+        "available_cameras": available_cameras,
+        "camera_discovery_succeeded": camera_discovery_succeeded,
+    });
+    if sink
+        .send(WsMessage::Text(camera_report.to_string()))
+        .await
+        .is_err()
+    {
+        return;
+    }
 
     loop {
         let recv = timeout(Duration::from_secs(2), source.next()).await;

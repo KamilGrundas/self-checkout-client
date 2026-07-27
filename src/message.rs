@@ -1,6 +1,6 @@
 use crate::camera::{CameraOption, CapturedFrame};
-use crate::checkout::CheckoutSession;
-use crate::product::{Product, ProductImage};
+use crate::checkout::{CheckoutSession, ConnectionData};
+use crate::product::ProductImage;
 use crate::ws::WsEvent;
 
 /// Decoded camera preview frames ready for display.
@@ -48,17 +48,14 @@ pub enum Message {
     ShelfPlacementReady,
     ShelfPlacementConfirmed,
     WeightMeasured(f64),
-    ConnectionFinished(
-        Result<(Vec<Product>, Vec<crate::product::Category>, CheckoutSession), String>,
-    ),
-    RecoveryFinished(
-        Result<(Vec<Product>, Vec<crate::product::Category>, CheckoutSession), String>,
-    ),
+    ConnectionFinished(Result<ConnectionData, String>),
+    RecoveryFinished(Result<ConnectionData, String>),
     CartSynced(Result<CheckoutSession, String>),
     PayPressed,
     PaymentMethodSelected,
     PaymentMethodBackPressed,
     PaymentTerminalDecision(bool),
+    PaymentCompleted(Result<CheckoutSession, String>),
     PaymentSuccessTimeout,
     SearchProductPressed,
     ProductPageChanged(usize),
