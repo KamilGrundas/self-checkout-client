@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 dotenvy = "0.15.7"
-iced = { version = "0.14.0", features = ["image"] }
+iced = { version = "0.14.0", features = ["advanced", "image"] }
 iced_aw = { version = "0.13.1", default-features = false, features = ["spinner"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 nokhwa = { version = "0.10.10", features = ["input-native"] }
