@@ -1,4 +1,5 @@
-use crate::product::Product;
+use crate::camera::CameraOption;
+use crate::product::{Category, Product};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +68,15 @@ pub struct CheckoutSession {
     pub counter_settings: CounterSettings,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConnectionData {
+    pub products: Vec<Product>,
+    pub categories: Vec<Category>,
+    pub checkout_session: CheckoutSession,
+    pub cameras: Vec<CameraOption>,
+    pub camera_error: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CounterSettingsUpdatePayload {
     pub counter_id: String,
@@ -82,6 +92,34 @@ pub struct ConnectPayload {
     pub counter_id: String,
     pub password: String,
     pub client_id: String,
+    pub available_cameras: Vec<CameraOption>,
+    pub camera_discovery_succeeded: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_payload_serializes_available_cameras() {
+        let payload = ConnectPayload {
+            counter_id: "counter-id".to_string(),
+            password: "password".to_string(),
+            client_id: "client-id".to_string(),
+            available_cameras: vec![CameraOption {
+                index: 2,
+                device_id: "camera-device".to_string(),
+                label: "Camera label".to_string(),
+            }],
+            camera_discovery_succeeded: true,
+        };
+
+        let json = serde_json::to_value(payload).expect("payload should serialize");
+        assert_eq!(json["available_cameras"][0]["device_id"], "camera-device");
+        assert_eq!(json["available_cameras"][0]["label"], "Camera label");
+        assert_eq!(json["available_cameras"][0]["index"], 2);
+        assert_eq!(json["camera_discovery_succeeded"], true);
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -90,4 +128,11 @@ pub struct SyncCartPayload {
     pub password: String,
     pub client_id: String,
     pub cart: Vec<CartItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaymentPayload {
+    pub counter_id: String,
+    pub password: String,
+    pub client_id: String,
 }

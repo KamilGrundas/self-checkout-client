@@ -11,7 +11,8 @@ mod ws;
 
 use crate::camera::{CameraOption, CameraWorker, CapturedFrame, SharedCameraHandle, list_cameras};
 use crate::checkout::{
-    CartItem, CheckoutSession, ConnectPayload, CounterSettingsUpdatePayload, SyncCartPayload,
+    CartItem, CheckoutSession, ConnectPayload, ConnectionData, CounterSettingsUpdatePayload,
+    PaymentPayload, SyncCartPayload,
 };
 use crate::i18n::I18n;
 use crate::message::{Message, PreviewFrames};
@@ -159,11 +160,6 @@ impl SelfCheckout {
                     .unwrap_or(false)
             });
         let client_id = load_or_create_client_id();
-        let (cameras, camera_error) = match list_cameras() {
-            Ok(cameras) => (cameras, String::new()),
-            Err(error) => (Vec::new(), error),
-        };
-
         (
             Self {
                 screen: Screen::Connecting,
@@ -193,10 +189,10 @@ impl SelfCheckout {
                 connection_failed: false,
                 recovering_connection: false,
                 manual_reconnect_available: false,
-                cameras,
+                cameras: Vec::new(),
                 selected_shelf_camera: None,
                 shelf_camera_worker: None,
-                shelf_camera_error: camera_error,
+                shelf_camera_error: String::new(),
                 pending_shelf_capture: None,
                 shelf_ready_enabled: false,
                 last_shelf_snapshot_session_id: None,
@@ -424,17 +420,19 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             push_settings_task(state)
         }
         Message::ConnectionFinished(result) => match result {
-            Ok((products, categories, checkout_session)) => {
+            Ok(connection) => {
                 state.loading_products = false;
                 state.connection_failed = false;
                 state.manual_reconnect_available = false;
                 state.status = "Connected".to_string();
                 state.payment_overlay = PaymentOverlay::None;
-                state.categories = categories;
-                state.products = products;
-                state.cart = checkout_session.cart.clone();
-                apply_counter_settings(state, &checkout_session);
-                state.checkout_session = Some(checkout_session.clone());
+                state.categories = connection.categories;
+                state.products = connection.products;
+                state.cameras = connection.cameras;
+                state.shelf_camera_error = connection.camera_error;
+                state.cart = connection.checkout_session.cart.clone();
+                apply_counter_settings(state, &connection.checkout_session);
+                state.checkout_session = Some(connection.checkout_session.clone());
                 state.screen = if state.cart.is_empty() {
                     Screen::Welcome
                 } else {
@@ -478,12 +476,14 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             }
         },
         Message::RecoveryFinished(result) => match result {
-            Ok((products, categories, checkout_session)) => {
-                state.categories = categories;
-                state.products = products;
-                state.cart = checkout_session.cart.clone();
-                apply_counter_settings(state, &checkout_session);
-                state.checkout_session = Some(checkout_session.clone());
+            Ok(connection) => {
+                state.categories = connection.categories;
+                state.products = connection.products;
+                state.cameras = connection.cameras;
+                state.shelf_camera_error = connection.camera_error;
+                state.cart = connection.checkout_session.cart.clone();
+                apply_counter_settings(state, &connection.checkout_session);
+                state.checkout_session = Some(connection.checkout_session.clone());
                 state.recovering_connection = false;
                 state.connection_failed = false;
                 state.manual_reconnect_available = false;
@@ -800,6 +800,33 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
             }
 
             if success {
+                state.status = state
+                    .i18n
+                    .t_or("payment_processing", "Completing payment...");
+                let Some(checkout_session) = state.checkout_session.as_ref() else {
+                    state.payment_overlay = PaymentOverlay::MethodSelection;
+                    return Task::none();
+                };
+                return Task::perform(
+                    complete_payment(
+                        state.api_base_url.clone(),
+                        state.counter_id.clone(),
+                        state.counter_password.clone(),
+                        state.client_id.clone(),
+                        checkout_session.id.clone(),
+                    ),
+                    Message::PaymentCompleted,
+                );
+            }
+
+            state.payment_overlay = PaymentOverlay::MethodSelection;
+            state.status = state
+                .i18n
+                .t_or("payment_failed", "Payment failed. Please try again");
+            Task::none()
+        }
+        Message::PaymentCompleted(result) => {
+            if result.is_ok() {
                 state.cart.clear();
                 state.selected_category_key = "all".to_string();
                 state.selected_product = None;
@@ -816,11 +843,16 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 return Task::perform(wait_payment_success_timeout(), |_| {
                     Message::PaymentSuccessTimeout
                 });
-            } else {
+            }
+
+            if let Err(error) = result {
                 state.payment_overlay = PaymentOverlay::MethodSelection;
-                state.status = state
-                    .i18n
-                    .t_or("payment_failed", "Payment failed. Please try again");
+                state.status = format!(
+                    "{}: {error}",
+                    state
+                        .i18n
+                        .t_or("payment_failed", "Payment failed. Please try again")
+                );
             }
             Task::none()
         }
@@ -995,6 +1027,7 @@ fn subscription(state: &SelfCheckout) -> Subscription<Message> {
             counter_id: state.counter_id.clone(),
             counter_password: state.counter_password.clone(),
             client_id: state.client_id.clone(),
+            available_cameras: state.cameras.clone(),
         })
     } else {
         Subscription::none()
@@ -1186,7 +1219,7 @@ fn product_image_tasks(api_base_url: &str, products: &[Product]) -> Task<Message
     Task::batch(tasks)
 }
 
-type ConnectResult = Result<(Vec<Product>, Vec<Category>, CheckoutSession), String>;
+type ConnectResult = Result<ConnectionData, String>;
 type ConnectMessage = fn(ConnectResult) -> Message;
 
 fn connect_task(
@@ -1335,16 +1368,35 @@ async fn connect_backend(
     counter_id: String,
     counter_password: String,
     client_id: String,
-) -> Result<(Vec<Product>, Vec<Category>, CheckoutSession), String> {
+) -> ConnectResult {
     if counter_id.is_empty() || counter_password.is_empty() {
         return Err("Missing CHECKOUT_COUNTER_ID or CHECKOUT_COUNTER_PASSWORD".to_string());
     }
 
+    let (cameras, camera_error, camera_discovery_succeeded) = match list_cameras() {
+        Ok(cameras) => (cameras, String::new(), true),
+        Err(error) => (Vec::new(), error, false),
+    };
     let mut last_error = "Backend is unavailable".to_string();
 
     for attempt in 1..=3 {
-        match try_connect(&api_base_url, &counter_id, &counter_password, &client_id) {
-            Ok(result) => return Ok(result),
+        match try_connect(
+            &api_base_url,
+            &counter_id,
+            &counter_password,
+            &client_id,
+            &cameras,
+            camera_discovery_succeeded,
+        ) {
+            Ok((products, categories, checkout_session)) => {
+                return Ok(ConnectionData {
+                    products,
+                    categories,
+                    checkout_session,
+                    cameras,
+                    camera_error,
+                });
+            }
             Err(error) => {
                 last_error = format!("Connection attempt {attempt}/3 failed: {error}");
                 if attempt < 3 {
@@ -1362,11 +1414,20 @@ fn try_connect(
     counter_id: &str,
     counter_password: &str,
     client_id: &str,
+    cameras: &[CameraOption],
+    camera_discovery_succeeded: bool,
 ) -> Result<(Vec<Product>, Vec<Category>, CheckoutSession), String> {
     check_backend_health(api_base_url)?;
     let products = fetch_products_blocking(api_base_url)?;
     let categories = fetch_categories_blocking(api_base_url)?;
-    let checkout_session = connect_session(api_base_url, counter_id, counter_password, client_id)?;
+    let checkout_session = connect_session(
+        api_base_url,
+        counter_id,
+        counter_password,
+        client_id,
+        cameras,
+        camera_discovery_succeeded,
+    )?;
     Ok((products, categories, checkout_session))
 }
 
@@ -1388,12 +1449,16 @@ fn connect_session(
     counter_id: &str,
     counter_password: &str,
     client_id: &str,
+    cameras: &[CameraOption],
+    camera_discovery_succeeded: bool,
 ) -> Result<CheckoutSession, String> {
     let client = reqwest::blocking::Client::new();
     let payload = ConnectPayload {
         counter_id: counter_id.to_string(),
         password: counter_password.to_string(),
         client_id: client_id.to_string(),
+        available_cameras: cameras.to_vec(),
+        camera_discovery_succeeded,
     };
 
     client
@@ -1432,6 +1497,31 @@ async fn sync_cart(
         .map_err(|error| format!("Failed to sync cart: {error}"))?
         .json::<CheckoutSession>()
         .map_err(|error| format!("Failed to decode checkout session: {error}"))
+}
+
+async fn complete_payment(
+    api_base_url: String,
+    counter_id: String,
+    counter_password: String,
+    client_id: String,
+    session_id: String,
+) -> Result<CheckoutSession, String> {
+    let client = reqwest::blocking::Client::new();
+    let payload = PaymentPayload {
+        counter_id,
+        password: counter_password,
+        client_id,
+    };
+
+    client
+        .post(session_payment_url(&api_base_url, &session_id))
+        .json(&payload)
+        .send()
+        .map_err(|error| format!("Failed to complete payment: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("Failed to complete payment: {error}"))?
+        .json::<CheckoutSession>()
+        .map_err(|error| format!("Failed to decode payment response: {error}"))
 }
 
 fn fetch_products_blocking(api_base_url: &str) -> Result<Vec<Product>, String> {
@@ -1751,10 +1841,36 @@ fn apply_counter_settings(state: &mut SelfCheckout, session: &CheckoutSession) {
         state.i18n = I18n::load(&settings.language);
     }
 
-    state.selected_shelf_camera =
+    let selected_shelf_camera =
         find_camera(settings.shelf_camera_device_id.as_deref(), &state.cameras).cloned();
-    state.selected_scale_camera =
+    let selected_scale_camera =
         find_camera(settings.scale_camera_device_id.as_deref(), &state.cameras).cloned();
+
+    if state
+        .selected_shelf_camera
+        .as_ref()
+        .map(|camera| &camera.device_id)
+        != selected_shelf_camera
+            .as_ref()
+            .map(|camera| &camera.device_id)
+    {
+        state.shelf_camera_worker = None;
+        state.shelf_preview_handle = None;
+    }
+    if state
+        .selected_scale_camera
+        .as_ref()
+        .map(|camera| &camera.device_id)
+        != selected_scale_camera
+            .as_ref()
+            .map(|camera| &camera.device_id)
+    {
+        state.scale_camera_worker = None;
+        state.scale_preview_handle = None;
+    }
+
+    state.selected_shelf_camera = selected_shelf_camera;
+    state.selected_scale_camera = selected_scale_camera;
 
     let has_camera = state.selected_shelf_camera.is_some() || state.selected_scale_camera.is_some();
     let desired = ml_mode_from_str(&settings.ml_mode);
@@ -1763,6 +1879,32 @@ fn apply_counter_settings(state: &mut SelfCheckout, session: &CheckoutSession) {
         MlMode::On | MlMode::Label => MlMode::Off,
         mode => mode,
     };
+
+    if state.ml_mode == MlMode::Off {
+        state.shelf_camera_worker = None;
+        state.scale_camera_worker = None;
+        return;
+    }
+
+    if let Some(camera) = state.selected_shelf_camera.clone()
+        && state.shelf_camera_worker.is_none()
+    {
+        state.shelf_camera_worker = Some(CameraWorker::start_nonblocking(camera));
+        state.shelf_camera_error.clear();
+    }
+    if let Some(camera) = state.selected_scale_camera.clone()
+        && state.scale_camera_worker.is_none()
+    {
+        state.scale_camera_worker = Some(CameraWorker::start_nonblocking(camera));
+        state.scale_camera_error.clear();
+    }
+}
+
+fn session_payment_url(api_base_url: &str, session_id: &str) -> String {
+    format!(
+        "{}/checkout-sessions/{session_id}/pay",
+        api_v1_base(api_base_url)
+    )
 }
 
 #[cfg(test)]

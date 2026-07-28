@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
+
 #[derive(Debug, Clone)]
 pub struct CapturedFrame {
     pub bytes: Vec<u8>,
@@ -11,7 +13,7 @@ pub struct CapturedFrame {
     pub file_name: &'static str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct CameraOption {
     pub index: u32,
     pub device_id: String,
@@ -198,15 +200,88 @@ fn camera_worker_loop(
 pub fn list_cameras() -> Result<Vec<CameraOption>, String> {
     use std::process::Command;
 
-    let output = Command::new("ffmpeg")
+    let ffmpeg_path = resolve_ffmpeg_path()?;
+    let output = Command::new(&ffmpeg_path)
         .args(["-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .output()
-        .map_err(|error| format!("Failed to run ffmpeg for camera discovery: {error}"))?;
+        .map_err(|error| {
+            format!(
+                "Failed to run ffmpeg at {} for camera discovery: {error}",
+                ffmpeg_path.display()
+            )
+        })?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut cameras = Vec::new();
+    let cameras = parse_avfoundation_video_devices(&stderr);
 
-    for line in stderr.lines() {
+    if cameras.is_empty() {
+        return Err(
+            "No cameras found. Check macOS camera permissions for Terminal and verify ffmpeg can see your devices."
+                .to_string(),
+        );
+    }
+
+    Ok(cameras)
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_ffmpeg_path() -> Result<std::path::PathBuf, String> {
+    use std::path::{Path, PathBuf};
+
+    if let Some(configured_path) = std::env::var_os("FFMPEG_PATH")
+        && !configured_path.is_empty()
+    {
+        let path = PathBuf::from(configured_path);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(format!(
+            "FFMPEG_PATH points to a file that does not exist: {}",
+            path.display()
+        ));
+    }
+
+    if let Some(path_value) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path_value) {
+            let candidate = directory.join("ffmpeg");
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    for candidate in [
+        Path::new("/opt/homebrew/bin/ffmpeg"),
+        Path::new("/usr/local/bin/ffmpeg"),
+    ] {
+        if candidate.is_file() {
+            return Ok(candidate.to_path_buf());
+        }
+    }
+
+    Err(
+        "ffmpeg was not found. Install it with Homebrew or set FFMPEG_PATH to the executable"
+            .to_string(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn parse_avfoundation_video_devices(output: &str) -> Vec<CameraOption> {
+    let mut cameras = Vec::new();
+    let mut parsing_video_devices = false;
+
+    for line in output.lines() {
+        if line.contains("AVFoundation video devices:") {
+            parsing_video_devices = true;
+            continue;
+        }
+        if line.contains("AVFoundation audio devices:") {
+            break;
+        }
+        if !parsing_video_devices {
+            continue;
+        }
+
         let Some(marker_start) = line.find("] [") else {
             continue;
         };
@@ -222,7 +297,7 @@ pub fn list_cameras() -> Result<Vec<CameraOption>, String> {
         };
 
         let label = suffix[index_end + 1..].trim();
-        if label.is_empty() {
+        if label.is_empty() || label.starts_with("Capture screen ") {
             continue;
         }
 
@@ -233,14 +308,7 @@ pub fn list_cameras() -> Result<Vec<CameraOption>, String> {
         });
     }
 
-    if cameras.is_empty() {
-        return Err(
-            "No cameras found. Check macOS camera permissions for Terminal and verify ffmpeg can see your devices."
-                .to_string(),
-        );
-    }
-
-    Ok(cameras)
+    cameras
 }
 
 #[cfg(target_os = "macos")]
@@ -267,7 +335,8 @@ fn camera_stream_loop(
     frame_path.push(format!("self-checkout-camera-{}.jpg", camera.index));
 
     let input = format!("{}:none", camera.index);
-    let mut child = Command::new("ffmpeg")
+    let ffmpeg_path = resolve_ffmpeg_path()?;
+    let mut child = Command::new(&ffmpeg_path)
         .args([
             "-hide_banner",
             "-loglevel",
@@ -292,8 +361,9 @@ fn camera_stream_loop(
         .spawn()
         .map_err(|error| {
             format!(
-                "Failed to start camera stream for {}: {error}",
-                camera.label
+                "Failed to start camera stream for {} with {}: {error}",
+                camera.label,
+                ffmpeg_path.display()
             )
         })?;
 
@@ -423,4 +493,30 @@ fn camera_stream_loop(
     }
 
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::parse_avfoundation_video_devices;
+
+    #[test]
+    fn avfoundation_discovery_keeps_only_physical_video_devices() {
+        let output = r#"
+[AVFoundation indev @ 0x1] AVFoundation video devices:
+[AVFoundation indev @ 0x1] [0] Brio 500
+[AVFoundation indev @ 0x1] [1] MacBook Air Camera
+[AVFoundation indev @ 0x1] [2] Capture screen 0
+[AVFoundation indev @ 0x1] AVFoundation audio devices:
+[AVFoundation indev @ 0x1] [0] Brio 500
+[AVFoundation indev @ 0x1] [1] MacBook Air Microphone
+"#;
+
+        let cameras = parse_avfoundation_video_devices(output);
+
+        assert_eq!(cameras.len(), 2);
+        assert_eq!(cameras[0].device_id, "0");
+        assert_eq!(cameras[0].label, "Brio 500");
+        assert_eq!(cameras[1].device_id, "1");
+        assert_eq!(cameras[1].label, "MacBook Air Camera");
+    }
 }
