@@ -1,5 +1,6 @@
 mod camera;
 mod checkout;
+mod cursor;
 mod i18n;
 mod message;
 mod product;
@@ -136,6 +137,7 @@ struct SelfCheckout {
     images_loaded: usize,
     admin_takeover: bool,
     payment_overlay: PaymentOverlay,
+    hide_cursor: bool,
 }
 
 impl SelfCheckout {
@@ -149,6 +151,13 @@ impl SelfCheckout {
             env::var("ML_API_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8001".to_string());
         let counter_id = env::var("CHECKOUT_COUNTER_ID").unwrap_or_default();
         let counter_password = env::var("CHECKOUT_COUNTER_PASSWORD").unwrap_or_default();
+        let hide_cursor = env::var("HIDE_CURSOR")
+            .map(|value| matches!(value.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or_else(|_| {
+                env::var("APP_ENV")
+                    .map(|value| matches!(value.to_lowercase().as_str(), "prod" | "production"))
+                    .unwrap_or(false)
+            });
         let client_id = load_or_create_client_id();
         let (cameras, camera_error) = match list_cameras() {
             Ok(cameras) => (cameras, String::new()),
@@ -205,6 +214,7 @@ impl SelfCheckout {
                 images_loaded: 0,
                 admin_takeover: false,
                 payment_overlay: PaymentOverlay::None,
+                hide_cursor,
             },
             connect_task(
                 api_base_url,
@@ -247,10 +257,11 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 .iter()
                 .filter(|p| !state.product_images.contains_key(&p.id))
                 .filter_map(|product| {
-                    let url = product
+                    let image_url = product
                         .thumbnail_url
                         .clone()
                         .or_else(|| product.image_url.clone())?;
+                    let url = resolve_product_image_url(&state.api_base_url, &image_url);
                     let product_id = product.id.clone();
                     Some(Task::perform(fetch_image(url), move |result| {
                         Message::ProductImageLoaded { product_id, result }
@@ -451,7 +462,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 if state.cart.is_empty() {
                     Task::none()
                 } else {
-                    product_image_tasks(&state.products)
+                    product_image_tasks(&state.api_base_url, &state.products)
                 }
             }
             Err(error) => {
@@ -478,7 +489,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.manual_reconnect_available = false;
                 state.status = "Connection restored".to_string();
                 state.payment_overlay = PaymentOverlay::None;
-                product_image_tasks(&state.products)
+                product_image_tasks(&state.api_base_url, &state.products)
             }
             Err(error) => {
                 state.connection_failed = true;
@@ -994,7 +1005,7 @@ fn subscription(state: &SelfCheckout) -> Subscription<Message> {
 
 fn view(state: &SelfCheckout) -> Element<'_, Message> {
     let inner = inner_view(state);
-    if state.admin_takeover {
+    let content: Element<'_, Message> = if state.admin_takeover {
         column![admin_takeover_banner(&state.i18n), inner]
             .spacing(0)
             .width(Length::Fill)
@@ -1002,6 +1013,12 @@ fn view(state: &SelfCheckout) -> Element<'_, Message> {
             .into()
     } else {
         inner
+    };
+
+    if state.hide_cursor {
+        cursor::hidden(content)
+    } else {
+        content
     }
 }
 
@@ -1153,12 +1170,13 @@ fn loading_view(state: &SelfCheckout) -> Element<'_, Message> {
         .into()
 }
 
-fn product_image_tasks(products: &[Product]) -> Task<Message> {
+fn product_image_tasks(api_base_url: &str, products: &[Product]) -> Task<Message> {
     let tasks = products.iter().filter_map(|product| {
-        let url = product
+        let image_url = product
             .thumbnail_url
             .clone()
             .or_else(|| product.image_url.clone())?;
+        let url = resolve_product_image_url(api_base_url, &image_url);
         let product_id = product.id.clone();
         Some(Task::perform(fetch_image(url), move |result| {
             Message::ProductImageLoaded { product_id, result }
@@ -1555,6 +1573,22 @@ fn products_url(api_base_url: &str) -> String {
     format!("{}/products/", api_v1_base(api_base_url))
 }
 
+fn resolve_product_image_url(api_base_url: &str, image_url: &str) -> String {
+    const BACKEND_IMAGE_PATH: &str = "/api/v1/products/object-storage/";
+
+    let Some(path_start) = image_url.find(BACKEND_IMAGE_PATH) else {
+        return image_url.to_string();
+    };
+    let prefix = &image_url[..path_start];
+    if !prefix.is_empty() && !prefix.starts_with("http://") && !prefix.starts_with("https://") {
+        return image_url.to_string();
+    }
+
+    let api_base = api_base_url.trim_end_matches('/');
+    let api_origin = api_base.strip_suffix("/api/v1").unwrap_or(api_base);
+    format!("{api_origin}{}", &image_url[path_start..])
+}
+
 fn categories_url(api_base_url: &str) -> String {
     format!("{}/categories/", api_v1_base(api_base_url))
 }
@@ -1729,4 +1763,40 @@ fn apply_counter_settings(state: &mut SelfCheckout, session: &CheckoutSession) {
         MlMode::On | MlMode::Label => MlMode::Off,
         mode => mode,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_product_image_url;
+
+    #[test]
+    fn routes_backend_product_images_through_the_configured_api_origin() {
+        let image_url =
+            "http://192.168.0.36:8000/api/v1/products/object-storage/products/one/thumb.webp";
+
+        assert_eq!(
+            resolve_product_image_url("http://100.70.244.42:8000", image_url),
+            "http://100.70.244.42:8000/api/v1/products/object-storage/products/one/thumb.webp"
+        );
+    }
+
+    #[test]
+    fn accepts_api_base_with_api_v1_suffix() {
+        let image_url = "/api/v1/products/object-storage/products/one/thumb.webp";
+
+        assert_eq!(
+            resolve_product_image_url("http://127.0.0.1:8000/api/v1/", image_url),
+            "http://127.0.0.1:8000/api/v1/products/object-storage/products/one/thumb.webp"
+        );
+    }
+
+    #[test]
+    fn preserves_external_product_image_urls() {
+        let image_url = "https://cdn.example.test/products/one.webp";
+
+        assert_eq!(
+            resolve_product_image_url("http://127.0.0.1:8000", image_url),
+            image_url
+        );
+    }
 }

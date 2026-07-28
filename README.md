@@ -55,11 +55,15 @@ CHECKOUT_COUNTER_ID=put-counter-id-here
 CHECKOUT_COUNTER_PASSWORD=put-counter-password-here
 CLIENT_ID_STORAGE_PATH=.self-checkout-client-id
 ML_API_BASE_URL=http://127.0.0.1:8001
+HIDE_CURSOR=false
 ```
 
 `APP_ENV` controls the window mode:
 - `dev` (default) -> windowed mode
 - `prod` or `production` -> fullscreen mode
+
+`HIDE_CURSOR` explicitly controls pointer visibility. When it is omitted, the
+cursor is hidden in `prod`/`production` and visible in local development.
 
 ## Run
 
@@ -70,8 +74,39 @@ cargo run
 ## Check Build
 
 ```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
 cargo check
+cargo test
 ```
+
+## Optional target-computer validation
+
+The control workspace supports a replaceable target computer at
+`ssh dev-client`. Access is optional; local implementation and Cargo checks
+continue when the target is unavailable.
+
+From the parent workspace:
+
+```bash
+./ops/dev-client-check.sh --optional
+./ops/dev-client-inspect.sh
+./ops/dev-client-inspect.sh --refresh  # only for a new or changed target
+./ops/dev-client-sync.sh --dry-run
+./ops/dev-client-deploy.sh
+./ops/dev-client-status.sh
+```
+
+Only Cargo manifests, the pinned toolchain, `src/`, and `assets/` are
+synchronized. Device `.env`, identity, persisted settings, build outputs, and
+startup configuration are preserved. The deploy command builds natively,
+retains the prior release binary, restarts through the startup strategy stored
+in the device-owned target profile, and verifies that the new process is the
+new build. Target API endpoints must lead exclusively to services on `dev`.
+
+The target-profile contract and hardware-validation checklist are documented
+in the control workspace at `docs/dev-client.md`. Remote process checks do not
+replace direct confirmation of display, touch, camera, and scale behavior.
 
 ## Runtime Notes
 
