@@ -58,13 +58,17 @@ The client reads configuration from `.env` or environment variables:
 ```env
 DEFAULT_LANG=pl
 APP_ENV=dev
-API_BASE_URL=http://127.0.0.1:8000
+API_BASE_URL=https://dev.api.teik.pl
 CHECKOUT_COUNTER_ID=put-counter-id-here
 CHECKOUT_COUNTER_PASSWORD=put-counter-password-here
 CLIENT_ID_STORAGE_PATH=.self-checkout-client-id
-ML_API_BASE_URL=http://127.0.0.1:8001
+ML_API_BASE_URL=https://dev.ml.teik.pl
 HIDE_CURSOR=false
 ```
+
+HTTPS and WSS connections use the operating system's trusted root
+certificates. The device trust store must therefore contain the Caddy local CA
+used by the development hostnames.
 
 `FFMPEG_PATH` is optional on macOS. The client first checks this override, then
 the process `PATH`, `/opt/homebrew/bin/ffmpeg`, and
