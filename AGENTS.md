@@ -28,6 +28,12 @@ Do not assume filesystem paths, packages, service management, or graphical
 runtime details. Do not claim visual, camera, touch, or scale behavior was
 validated unless it was observed on the physical target.
 
+The canonical development endpoints are `https://dev.api.teik.pl` and
+`https://dev.ml.teik.pl`. Native HTTPS and WSS use the operating-system trust
+store, so verify that the target trusts the Caddy development CA; do not weaken
+TLS verification, add an application-private CA fallback, or replace these
+URLs with raw IP addresses and published Compose ports.
+
 Treat target authentication as part of deployment, not as manual setup. A
 reachable target must have a dedicated checkout-counter record in the backend
 on `dev`, named `dev-client` unless its non-secret target profile records

@@ -170,7 +170,7 @@ async fn pump<S>(
         "camera_discovery_succeeded": camera_discovery_succeeded,
     });
     if sink
-        .send(WsMessage::Text(camera_report.to_string()))
+        .send(WsMessage::Text(camera_report.to_string().into()))
         .await
         .is_err()
     {

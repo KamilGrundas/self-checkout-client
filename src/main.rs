@@ -146,10 +146,8 @@ impl SelfCheckout {
         let _ = dotenvy::dotenv();
 
         let language = env::var("DEFAULT_LANG").unwrap_or_else(|_| "en".to_string());
-        let api_base_url =
-            env::var("API_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
-        let ml_api_base_url =
-            env::var("ML_API_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8001".to_string());
+        let api_base_url = env::var("API_BASE_URL").expect("API_BASE_URL must be set");
+        let ml_api_base_url = env::var("ML_API_BASE_URL").expect("ML_API_BASE_URL must be set");
         let counter_id = env::var("CHECKOUT_COUNTER_ID").unwrap_or_default();
         let counter_password = env::var("CHECKOUT_COUNTER_PASSWORD").unwrap_or_default();
         let hide_cursor = env::var("HIDE_CURSOR")
@@ -1913,8 +1911,7 @@ mod tests {
 
     #[test]
     fn routes_backend_product_images_through_the_configured_api_origin() {
-        let image_url =
-            "http://192.168.0.36:8000/api/v1/products/object-storage/products/one/thumb.webp";
+        let image_url = "http://legacy-api.example.test:8000/api/v1/products/object-storage/products/one/thumb.webp";
 
         assert_eq!(
             resolve_product_image_url("http://100.70.244.42:8000", image_url),
