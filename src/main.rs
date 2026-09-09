@@ -1522,24 +1522,54 @@ async fn complete_payment(
         .map_err(|error| format!("Failed to decode payment response: {error}"))
 }
 
+fn api_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Could not initialize authenticated API client".to_string())
+}
+
+fn api_request(
+    request: reqwest::blocking::RequestBuilder,
+    variable: &str,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    let token =
+        std::env::var(variable).map_err(|_| format!("Configure {variable} to access the API"))?;
+    if token.trim().is_empty() {
+        return Err(format!("Configure {variable} to access the API"));
+    }
+    let mut header = reqwest::header::HeaderValue::from_str(token.trim())
+        .map_err(|_| format!("Invalid {variable} configuration"))?;
+    header.set_sensitive(true);
+    Ok(request.header("X-API-Key", header))
+}
+
 fn fetch_products_blocking(api_base_url: &str) -> Result<Vec<Product>, String> {
-    reqwest::blocking::get(products_url(api_base_url))
-        .map_err(|error| format!("Failed to fetch products: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Failed to fetch products: {error}"))?
-        .json::<ProductsResponse>()
-        .map(|response| response.data)
-        .map_err(|error| format!("Failed to decode products: {error}"))
+    api_request(
+        api_client()?.get(products_url(api_base_url)),
+        "BACKEND_API_KEY",
+    )?
+    .send()
+    .map_err(|error| format!("Failed to fetch products: {error}"))?
+    .error_for_status()
+    .map_err(|error| format!("Failed to fetch products: {error}"))?
+    .json::<ProductsResponse>()
+    .map(|response| response.data)
+    .map_err(|error| format!("Failed to decode products: {error}"))
 }
 
 fn fetch_categories_blocking(api_base_url: &str) -> Result<Vec<Category>, String> {
-    reqwest::blocking::get(categories_url(api_base_url))
-        .map_err(|error| format!("Failed to fetch categories: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Failed to fetch categories: {error}"))?
-        .json::<CategoriesResponse>()
-        .map(|response| response.data)
-        .map_err(|error| format!("Failed to decode categories: {error}"))
+    api_request(
+        api_client()?.get(categories_url(api_base_url)),
+        "BACKEND_API_KEY",
+    )?
+    .send()
+    .map_err(|error| format!("Failed to fetch categories: {error}"))?
+    .error_for_status()
+    .map_err(|error| format!("Failed to fetch categories: {error}"))?
+    .json::<CategoriesResponse>()
+    .map(|response| response.data)
+    .map_err(|error| format!("Failed to decode categories: {error}"))
 }
 
 async fn fetch_image(image_url: String) -> Result<ProductImage, String> {
@@ -1589,8 +1619,7 @@ async fn upload_snapshot(
         form = form.text("product_name", product_name);
     }
 
-    reqwest::blocking::Client::new()
-        .post(url)
+    api_request(api_client()?.post(url), "ML_API_KEY")?
         .multipart(form)
         .send()
         .map_err(|error| format!("Failed to upload snapshot: {error}"))?
@@ -1617,15 +1646,17 @@ async fn classify_product(
 
     let form = reqwest::blocking::multipart::Form::new().part("file", file_part);
 
-    let prediction = reqwest::blocking::Client::new()
-        .post(ml_classify_url(&ml_api_base_url))
-        .multipart(form)
-        .send()
-        .map_err(|error| format!("Failed to call classify: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Classify endpoint error: {error}"))?
-        .json::<PredictionPublic>()
-        .map_err(|error| format!("Failed to decode classify response: {error}"))?;
+    let prediction = api_request(
+        api_client()?.post(ml_classify_url(&ml_api_base_url)),
+        "ML_API_KEY",
+    )?
+    .multipart(form)
+    .send()
+    .map_err(|error| format!("Failed to call classify: {error}"))?
+    .error_for_status()
+    .map_err(|error| format!("Classify endpoint error: {error}"))?
+    .json::<PredictionPublic>()
+    .map_err(|error| format!("Failed to decode classify response: {error}"))?;
 
     let mut scored: Vec<(String, f64)> = prediction.scores.into_iter().collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));

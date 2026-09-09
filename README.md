@@ -58,17 +58,17 @@ The client reads configuration from `.env` or environment variables:
 ```env
 DEFAULT_LANG=pl
 APP_ENV=dev
-API_BASE_URL=https://dev.api.teik.pl
+API_BASE_URL=http://localhost:8000
 CHECKOUT_COUNTER_ID=put-counter-id-here
 CHECKOUT_COUNTER_PASSWORD=put-counter-password-here
 CLIENT_ID_STORAGE_PATH=.self-checkout-client-id
-ML_API_BASE_URL=https://dev.ml.teik.pl
+ML_API_BASE_URL=http://localhost:8001
 HIDE_CURSOR=false
 ```
 
 HTTPS and WSS connections use the operating system's trusted root
-certificates. The device trust store must therefore contain the Caddy local CA
-used by the development hostnames.
+certificates. The selected local environment owns the corresponding trust
+configuration; do not weaken TLS verification in the client.
 
 `FFMPEG_PATH` is optional on macOS. The client first checks this override, then
 the process `PATH`, `/opt/homebrew/bin/ffmpeg`, and
@@ -99,31 +99,20 @@ cargo test
 
 ## Optional target-computer validation
 
-The control workspace supports a replaceable target computer at
-`ssh dev-client`. Access is optional; local implementation and Cargo checks
-continue when the target is unavailable.
+The client can run on a separately managed optional device. Access is optional;
+local implementation and Cargo checks continue when the device is unavailable.
 
-From the parent workspace:
+Device synchronization and deployment are local operator procedures, not
+workspace scripts. They must preserve device-owned configuration and never
+grant commit, push, release, or production authority.
 
-```bash
-./ops/dev-client-check.sh --optional
-./ops/dev-client-inspect.sh
-./ops/dev-client-inspect.sh --refresh  # only for a new or changed target
-./ops/dev-client-sync.sh --dry-run
-./ops/dev-client-deploy.sh
-./ops/dev-client-status.sh
-```
+Device `.env`, identity, persisted settings, build outputs, and startup
+configuration are owned by the local operator. Target API endpoints must lead
+exclusively to the selected local environment.
 
-Only Cargo manifests, the pinned toolchain, `src/`, and `assets/` are
-synchronized. Device `.env`, identity, persisted settings, build outputs, and
-startup configuration are preserved. The deploy command builds natively,
-retains the prior release binary, restarts through the startup strategy stored
-in the device-owned target profile, and verifies that the new process is the
-new build. Target API endpoints must lead exclusively to services on `dev`.
-
-The target-profile contract and hardware-validation checklist are documented
-in the control workspace at `docs/dev-client.md`. Remote process checks do not
-replace direct confirmation of display, touch, camera, and scale behavior.
+The target profile and hardware-validation checklist are local operator
+procedures. Remote process checks do not replace direct confirmation of
+display, touch, camera, and scale behavior.
 
 ## Runtime Notes
 
