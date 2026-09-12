@@ -59,8 +59,6 @@ fn default_language() -> String {
 #[allow(dead_code)]
 pub struct CheckoutSession {
     pub id: String,
-    pub counter_id: String,
-    pub client_id: String,
     pub closed: bool,
     pub payment_status: String,
     pub cart: Vec<CartItem>,
@@ -78,20 +76,7 @@ pub struct ConnectionData {
 }
 
 #[derive(Debug, Serialize)]
-pub struct CounterSettingsUpdatePayload {
-    pub counter_id: String,
-    pub password: String,
-    pub ml_mode: String,
-    pub shelf_camera_device_id: Option<String>,
-    pub scale_camera_device_id: Option<String>,
-    pub language: String,
-}
-
-#[derive(Debug, Serialize)]
 pub struct ConnectPayload {
-    pub counter_id: String,
-    pub password: String,
-    pub client_id: String,
     pub available_cameras: Vec<CameraOption>,
     pub camera_discovery_succeeded: bool,
 }
@@ -103,9 +88,6 @@ mod tests {
     #[test]
     fn connect_payload_serializes_available_cameras() {
         let payload = ConnectPayload {
-            counter_id: "counter-id".to_string(),
-            password: "password".to_string(),
-            client_id: "client-id".to_string(),
             available_cameras: vec![CameraOption {
                 index: 2,
                 device_id: "camera-device".to_string(),
@@ -124,15 +106,8 @@ mod tests {
 
 #[derive(Debug, Serialize)]
 pub struct SyncCartPayload {
-    pub counter_id: String,
-    pub password: String,
-    pub client_id: String,
     pub cart: Vec<CartItem>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct PaymentPayload {
-    pub counter_id: String,
-    pub password: String,
-    pub client_id: String,
-}
+pub struct PaymentPayload {}

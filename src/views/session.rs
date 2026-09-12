@@ -219,14 +219,11 @@ pub fn session_view<'a>(
 
     let utility_panel = container(
         row![
-            row![
-                utility_button("assets/ui/help.png", i18n.t("help"), Message::HelpPressed),
-                utility_button(
-                    "assets/ui/language.png",
-                    i18n.t("language"),
-                    Message::LanguagePressed,
-                )
-            ]
+            row![utility_button(
+                "assets/ui/help.png",
+                i18n.t("help"),
+                Message::HelpPressed,
+            )]
             .spacing(12)
             .width(Length::Shrink),
             container(text("0,00 kg").size(40))

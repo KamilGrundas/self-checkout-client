@@ -14,6 +14,8 @@ use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep, timeout};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 fn tokio_runtime() -> &'static Runtime {
@@ -35,17 +37,14 @@ const RECONNECT_MAX_DELAY_SECS: u64 = 10;
 #[derive(Debug, Clone)]
 pub struct WsConfig {
     pub api_base_url: String,
-    pub counter_id: String,
-    pub counter_password: String,
-    pub client_id: String,
+    pub api_key: String,
     pub available_cameras: Vec<CameraOption>,
 }
 
 impl Hash for WsConfig {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.api_base_url.hash(state);
-        self.counter_id.hash(state);
-        self.client_id.hash(state);
+        self.api_key.hash(state);
         self.available_cameras.hash(state);
     }
 }
@@ -99,12 +98,19 @@ fn build_stream(config: &WsConfig) -> Pin<Box<dyn Stream<Item = Message> + Send>
 }
 
 async fn run_connection_loop(config: WsConfig, tx: mpsc::UnboundedSender<Message>) {
-    let url = ws_url(&config);
+    let request = match ws_request(&config) {
+        Ok(request) => request,
+        Err(error) => {
+            eprintln!("[ws] invalid configuration: {error}");
+            let _ = tx.send(Message::WsEvent(WsEvent::Disconnected));
+            return;
+        }
+    };
     eprintln!("[ws] connecting to checkout session websocket");
     let mut delay = RECONNECT_BASE_DELAY_SECS;
 
     loop {
-        match tokio_tungstenite::connect_async(&url).await {
+        match tokio_tungstenite::connect_async(request.clone()).await {
             Ok((stream, _response)) => {
                 eprintln!("[ws] connected");
                 delay = RECONNECT_BASE_DELAY_SECS;
@@ -235,7 +241,9 @@ async fn pump<S>(
     }
 }
 
-fn ws_url(config: &WsConfig) -> String {
+fn ws_request(
+    config: &WsConfig,
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, String> {
     let base = config.api_base_url.trim_end_matches('/');
     let scheme_swapped = if let Some(rest) = base.strip_prefix("https://") {
         format!("wss://{rest}")
@@ -249,15 +257,33 @@ fn ws_url(config: &WsConfig) -> String {
     } else {
         format!("{scheme_swapped}/api/v1")
     };
-    format!(
-        "{}/ws/checkout-session?counter_id={}&password={}&client_id={}",
-        api_v1,
-        urlencoding(&config.counter_id),
-        urlencoding(&config.counter_password),
-        urlencoding(&config.client_id),
-    )
+    let mut request = format!("{api_v1}/ws/checkout-session")
+        .into_client_request()
+        .map_err(|error| format!("invalid websocket URL: {error}"))?;
+    let api_key = HeaderValue::try_from(config.api_key.as_str())
+        .map_err(|error| format!("invalid checkout API key: {error}"))?;
+    request.headers_mut().insert("X-API-Key", api_key);
+    Ok(request)
 }
 
-fn urlencoding(value: &str) -> String {
-    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn websocket_request_keeps_handshake_headers_and_adds_counter_key() {
+        let request = ws_request(&WsConfig {
+            api_base_url: "https://api.example.test".to_string(),
+            api_key: "sck_test".to_string(),
+            available_cameras: vec![],
+        })
+        .expect("request should be valid");
+
+        assert_eq!(
+            request.uri(),
+            "wss://api.example.test/api/v1/ws/checkout-session"
+        );
+        assert!(request.headers().contains_key("Sec-WebSocket-Key"));
+        assert_eq!(request.headers().get("X-API-Key").unwrap(), "sck_test");
+    }
 }

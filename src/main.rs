@@ -4,20 +4,17 @@ mod cursor;
 mod i18n;
 mod message;
 mod product;
-mod settings;
 mod ui;
 mod views;
 mod ws;
 
-use crate::camera::{CameraOption, CameraWorker, CapturedFrame, SharedCameraHandle, list_cameras};
+use crate::camera::{CameraOption, CameraWorker, CapturedFrame, list_cameras};
 use crate::checkout::{
-    CartItem, CheckoutSession, ConnectPayload, ConnectionData, CounterSettingsUpdatePayload,
-    PaymentPayload, SyncCartPayload,
+    CartItem, CheckoutSession, ConnectPayload, ConnectionData, PaymentPayload, SyncCartPayload,
 };
 use crate::i18n::I18n;
-use crate::message::{Message, PreviewFrames};
+use crate::message::Message;
 use crate::product::{CategoriesResponse, Category, Product, ProductImage, ProductsResponse};
-use crate::settings::{build_settings_payload, find_camera, ml_mode_from_str, settings_from_state};
 use crate::ui::{floating_panel_style, primary_button_style};
 use crate::ws::{WsConfig, WsEvent};
 
@@ -25,15 +22,11 @@ use iced::widget::{button, column, container, image, progress_bar, text};
 use iced::{Element, Length, Subscription, Task, Theme, application, keyboard, window};
 use std::collections::HashMap;
 use std::env;
-use std::fs;
-use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use uuid::Uuid;
 
 use views::intro::welcome_view;
 use views::session::session_view;
-use views::settings::settings_overlay;
 
 fn main() -> iced::Result {
     let _ = dotenvy::dotenv();
@@ -91,9 +84,7 @@ struct SelfCheckout {
     i18n: I18n,
     api_base_url: String,
     ml_api_base_url: String,
-    counter_id: String,
-    counter_password: String,
-    client_id: String,
+    checkout_api_key: String,
     checkout_session: Option<CheckoutSession>,
     categories: Vec<Category>,
     products: Vec<Product>,
@@ -102,9 +93,6 @@ struct SelfCheckout {
     status: String,
     loading_products: bool,
     ml_mode: MlMode,
-    show_settings: bool,
-    shelf_preview_handle: Option<image::Handle>,
-    scale_preview_handle: Option<image::Handle>,
     cart: Vec<CartItem>,
     selected_product: Option<Product>,
     quantity_input: String,
@@ -148,8 +136,7 @@ impl SelfCheckout {
         let language = env::var("DEFAULT_LANG").unwrap_or_else(|_| "en".to_string());
         let api_base_url = env::var("API_BASE_URL").expect("API_BASE_URL must be set");
         let ml_api_base_url = env::var("ML_API_BASE_URL").expect("ML_API_BASE_URL must be set");
-        let counter_id = env::var("CHECKOUT_COUNTER_ID").unwrap_or_default();
-        let counter_password = env::var("CHECKOUT_COUNTER_PASSWORD").unwrap_or_default();
+        let checkout_api_key = env::var("CHECKOUT_API_KEY").unwrap_or_default();
         let hide_cursor = env::var("HIDE_CURSOR")
             .map(|value| matches!(value.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or_else(|_| {
@@ -157,7 +144,6 @@ impl SelfCheckout {
                     .map(|value| matches!(value.to_lowercase().as_str(), "prod" | "production"))
                     .unwrap_or(false)
             });
-        let client_id = load_or_create_client_id();
         (
             Self {
                 screen: Screen::Connecting,
@@ -165,9 +151,7 @@ impl SelfCheckout {
                 i18n: I18n::load(&language),
                 api_base_url: api_base_url.clone(),
                 ml_api_base_url,
-                counter_id: counter_id.clone(),
-                counter_password: counter_password.clone(),
-                client_id: client_id.clone(),
+                checkout_api_key: checkout_api_key.clone(),
                 checkout_session: None,
                 categories: Vec::new(),
                 products: Vec::new(),
@@ -176,9 +160,6 @@ impl SelfCheckout {
                 status: "Connecting to backend...".to_string(),
                 loading_products: true,
                 ml_mode: MlMode::Off,
-                show_settings: false,
-                shelf_preview_handle: None,
-                scale_preview_handle: None,
                 cart: Vec::new(),
                 selected_product: None,
                 quantity_input: String::new(),
@@ -210,13 +191,7 @@ impl SelfCheckout {
                 payment_overlay: PaymentOverlay::None,
                 hide_cursor,
             },
-            connect_task(
-                api_base_url,
-                counter_id,
-                counter_password,
-                client_id,
-                Message::ConnectionFinished,
-            ),
+            connect_task(api_base_url, checkout_api_key, Message::ConnectionFinished),
         )
     }
 }
@@ -265,78 +240,6 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
 
             Task::batch(tasks)
         }
-        Message::ToggleSettings => {
-            if !matches!(state.screen, Screen::Welcome) {
-                return Task::none();
-            }
-
-            state.show_settings = !state.show_settings;
-
-            if state.show_settings {
-                // Start camera workers (non-blocking)
-                if let Some(shelf_camera) = state.selected_shelf_camera.clone()
-                    && state.shelf_camera_worker.is_none()
-                {
-                    state.shelf_camera_worker = Some(CameraWorker::start_nonblocking(shelf_camera));
-                    state.shelf_camera_error.clear();
-                }
-                if let Some(scale_camera) = state.selected_scale_camera.clone()
-                    && state.scale_camera_worker.is_none()
-                {
-                    state.scale_camera_worker = Some(CameraWorker::start_nonblocking(scale_camera));
-                    state.scale_camera_error.clear();
-                }
-                camera_preview_task(state)
-            } else {
-                // Closing settings — stop workers if mode is Off
-                if state.ml_mode == MlMode::Off {
-                    state.shelf_camera_worker = None;
-                    state.scale_camera_worker = None;
-                }
-                state.shelf_preview_handle = None;
-                state.scale_preview_handle = None;
-                push_settings_task(state)
-            }
-        }
-        Message::SettingsModeSelected(mode) => {
-            let has_camera =
-                state.selected_shelf_camera.is_some() || state.selected_scale_camera.is_some();
-            if matches!(mode, MlMode::On | MlMode::Label) && !has_camera {
-                return Task::none();
-            }
-            state.ml_mode = mode;
-            push_settings_task(state)
-        }
-        Message::CameraPreviewTick(frames) => {
-            if !state.show_settings {
-                return Task::none();
-            }
-
-            if let Some(result) = frames.shelf {
-                match result {
-                    Ok(handle) => {
-                        state.shelf_preview_handle = Some(handle);
-                        state.shelf_camera_error.clear();
-                    }
-                    Err(error) => {
-                        state.shelf_camera_error = error;
-                    }
-                }
-            }
-            if let Some(result) = frames.scale {
-                match result {
-                    Ok(handle) => {
-                        state.scale_preview_handle = Some(handle);
-                        state.scale_camera_error.clear();
-                    }
-                    Err(error) => {
-                        state.scale_camera_error = error;
-                    }
-                }
-            }
-
-            camera_preview_task(state)
-        }
         Message::RetryConnectionPressed => {
             state.connection_failed = false;
             state.manual_reconnect_available = false;
@@ -348,75 +251,12 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 state.screen = Screen::Connecting;
                 connect_task(
                     state.api_base_url.clone(),
-                    state.counter_id.clone(),
-                    state.counter_password.clone(),
-                    state.client_id.clone(),
+                    state.checkout_api_key.clone(),
                     Message::ConnectionFinished,
                 )
             }
         }
         Message::HelpPressed => Task::none(),
-        Message::LanguagePressed => {
-            let next_language = if state.current_language == "pl" {
-                "en".to_string()
-            } else {
-                "pl".to_string()
-            };
-
-            state.current_language = next_language.clone();
-            state.i18n = I18n::load(&next_language);
-            state.quantity_error.clear();
-
-            push_settings_task(state)
-        }
-        Message::CameraSelected(camera) => {
-            state.shelf_camera_error.clear();
-            state.shelf_camera_worker = None;
-            state.shelf_preview_handle = None;
-
-            if state.show_settings || state.ml_mode != MlMode::Off {
-                state.shelf_camera_worker = Some(CameraWorker::start_nonblocking(camera.clone()));
-            }
-
-            state.selected_shelf_camera = Some(camera);
-            push_settings_task(state)
-        }
-        Message::ClearShelfCamera => {
-            state.shelf_camera_worker = None;
-            state.selected_shelf_camera = None;
-            state.shelf_camera_error.clear();
-            state.shelf_preview_handle = None;
-            if matches!(state.ml_mode, MlMode::On | MlMode::Label)
-                && state.selected_scale_camera.is_none()
-            {
-                state.ml_mode = MlMode::Off;
-            }
-            push_settings_task(state)
-        }
-        Message::ScaleCameraSelected(camera) => {
-            state.scale_camera_error.clear();
-            state.scale_camera_worker = None;
-            state.scale_preview_handle = None;
-
-            if state.show_settings || state.ml_mode != MlMode::Off {
-                state.scale_camera_worker = Some(CameraWorker::start_nonblocking(camera.clone()));
-            }
-
-            state.selected_scale_camera = Some(camera);
-            push_settings_task(state)
-        }
-        Message::ClearScaleCamera => {
-            state.scale_camera_worker = None;
-            state.selected_scale_camera = None;
-            state.scale_camera_error.clear();
-            state.scale_preview_handle = None;
-            if matches!(state.ml_mode, MlMode::On | MlMode::Label)
-                && state.selected_shelf_camera.is_none()
-            {
-                state.ml_mode = MlMode::Off;
-            }
-            push_settings_task(state)
-        }
         Message::ConnectionFinished(result) => match result {
             Ok(connection) => {
                 state.loading_products = false;
@@ -808,9 +648,7 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 return Task::perform(
                     complete_payment(
                         state.api_base_url.clone(),
-                        state.counter_id.clone(),
-                        state.counter_password.clone(),
-                        state.client_id.clone(),
+                        state.checkout_api_key.clone(),
                         checkout_session.id.clone(),
                     ),
                     Message::PaymentCompleted,
@@ -877,7 +715,11 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
         }
         Message::ScaleCameraFrameReady(frame_result) => {
             let classify_task = Task::perform(
-                classify_product(state.ml_api_base_url.clone(), frame_result.clone()),
+                classify_product(
+                    state.ml_api_base_url.clone(),
+                    state.checkout_api_key.clone(),
+                    frame_result.clone(),
+                ),
                 Message::ClassifyFinished,
             );
 
@@ -893,7 +735,14 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                     let url = ml_scale_snapshots_url(&state.ml_api_base_url, &session.id);
                     let upload_session_id = session.id.clone();
                     Task::perform(
-                        upload_snapshot(url, frame_result, capture_index, None, None),
+                        upload_snapshot(
+                            url,
+                            state.checkout_api_key.clone(),
+                            frame_result,
+                            capture_index,
+                            None,
+                            None,
+                        ),
                         move |result| Message::ScaleSnapshotUploaded {
                             session_id: upload_session_id,
                             capture_index,
@@ -953,12 +802,6 @@ fn update(state: &mut SelfCheckout, message: Message) -> Task<Message> {
                 Task::none()
             }
         },
-        Message::SettingsPushed(result) => {
-            if let Err(error) = result {
-                state.status = format!("Failed to save settings: {error}");
-            }
-            Task::none()
-        }
         Message::ClassifyFinished(result) => {
             state.classifying = false;
             state.product_search_open = true;
@@ -1004,27 +847,14 @@ fn subscription(state: &SelfCheckout) -> Subscription<Message> {
             } if c.eq_ignore_ascii_case("n") => Some(Message::PaymentTerminalDecision(false)),
             _ => None,
         })
-    } else if matches!(state.screen, Screen::Welcome) && !state.show_settings {
-        keyboard::listen().filter_map(|event| match event {
-            keyboard::Event::KeyPressed {
-                key: keyboard::Key::Character(ref c),
-                ..
-            } if c.as_str() == "o" => Some(Message::ToggleSettings),
-            _ => None,
-        })
     } else {
         Subscription::none()
     };
 
-    let ws_sub = if state.checkout_session.is_some()
-        && !state.counter_id.is_empty()
-        && !state.counter_password.is_empty()
-    {
+    let ws_sub = if state.checkout_session.is_some() && !state.checkout_api_key.is_empty() {
         ws::subscription(WsConfig {
             api_base_url: state.api_base_url.clone(),
-            counter_id: state.counter_id.clone(),
-            counter_password: state.counter_password.clone(),
-            client_id: state.client_id.clone(),
+            api_key: state.checkout_api_key.clone(),
             available_cameras: state.cameras.clone(),
         })
     } else {
@@ -1073,25 +903,7 @@ fn inner_view(state: &SelfCheckout) -> Element<'_, Message> {
     match state.screen {
         Screen::Connecting => connection_view(state),
         Screen::Loading => loading_view(state),
-        Screen::Welcome => {
-            let base = welcome_view(&state.i18n);
-            if state.show_settings {
-                settings_overlay(
-                    &state.i18n,
-                    base,
-                    state.ml_mode,
-                    &state.cameras,
-                    state.selected_shelf_camera.as_ref(),
-                    state.selected_scale_camera.as_ref(),
-                    state.shelf_preview_handle.as_ref(),
-                    state.scale_preview_handle.as_ref(),
-                    &state.shelf_camera_error,
-                    &state.scale_camera_error,
-                )
-            } else {
-                base
-            }
-        }
+        Screen::Welcome => welcome_view(&state.i18n),
         Screen::Session => session_view(
             &state.i18n,
             &state.categories,
@@ -1222,15 +1034,10 @@ type ConnectMessage = fn(ConnectResult) -> Message;
 
 fn connect_task(
     api_base_url: String,
-    counter_id: String,
-    counter_password: String,
-    client_id: String,
+    checkout_api_key: String,
     message: ConnectMessage,
 ) -> Task<Message> {
-    Task::perform(
-        connect_backend(api_base_url, counter_id, counter_password, client_id),
-        message,
-    )
+    Task::perform(connect_backend(api_base_url, checkout_api_key), message)
 }
 
 fn sync_cart_task(state: &SelfCheckout, cart: Vec<CartItem>) -> Task<Message> {
@@ -1241,9 +1048,7 @@ fn sync_cart_task(state: &SelfCheckout, cart: Vec<CartItem>) -> Task<Message> {
     Task::perform(
         sync_cart(
             state.api_base_url.clone(),
-            state.counter_id.clone(),
-            state.counter_password.clone(),
-            state.client_id.clone(),
+            state.checkout_api_key.clone(),
             checkout_session.id,
             cart,
         ),
@@ -1253,12 +1058,7 @@ fn sync_cart_task(state: &SelfCheckout, cart: Vec<CartItem>) -> Task<Message> {
 
 fn recovery_task(state: &SelfCheckout) -> Task<Message> {
     Task::perform(
-        connect_backend(
-            state.api_base_url.clone(),
-            state.counter_id.clone(),
-            state.counter_password.clone(),
-            state.client_id.clone(),
-        ),
+        connect_backend(state.api_base_url.clone(), state.checkout_api_key.clone()),
         Message::RecoveryFinished,
     )
 }
@@ -1307,6 +1107,7 @@ fn shelf_snapshot_task(
     Task::perform(
         upload_snapshot(
             ml_shelf_snapshots_url(&state.ml_api_base_url, &session_id),
+            state.checkout_api_key.clone(),
             snapshot_result,
             capture_index,
             product_id,
@@ -1348,6 +1149,7 @@ fn scale_snapshot_task(
     Task::perform(
         upload_snapshot(
             ml_scale_snapshots_url(&state.ml_api_base_url, &session_id),
+            state.checkout_api_key.clone(),
             snapshot_result,
             capture_index,
             product_id,
@@ -1361,14 +1163,9 @@ fn scale_snapshot_task(
     )
 }
 
-async fn connect_backend(
-    api_base_url: String,
-    counter_id: String,
-    counter_password: String,
-    client_id: String,
-) -> ConnectResult {
-    if counter_id.is_empty() || counter_password.is_empty() {
-        return Err("Missing CHECKOUT_COUNTER_ID or CHECKOUT_COUNTER_PASSWORD".to_string());
+async fn connect_backend(api_base_url: String, checkout_api_key: String) -> ConnectResult {
+    if checkout_api_key.trim().is_empty() {
+        return Err("Missing CHECKOUT_API_KEY".to_string());
     }
 
     let (cameras, camera_error, camera_discovery_succeeded) = match list_cameras() {
@@ -1380,9 +1177,7 @@ async fn connect_backend(
     for attempt in 1..=3 {
         match try_connect(
             &api_base_url,
-            &counter_id,
-            &counter_password,
-            &client_id,
+            &checkout_api_key,
             &cameras,
             camera_discovery_succeeded,
         ) {
@@ -1409,20 +1204,16 @@ async fn connect_backend(
 
 fn try_connect(
     api_base_url: &str,
-    counter_id: &str,
-    counter_password: &str,
-    client_id: &str,
+    checkout_api_key: &str,
     cameras: &[CameraOption],
     camera_discovery_succeeded: bool,
 ) -> Result<(Vec<Product>, Vec<Category>, CheckoutSession), String> {
     check_backend_health(api_base_url)?;
-    let products = fetch_products_blocking(api_base_url)?;
-    let categories = fetch_categories_blocking(api_base_url)?;
+    let products = fetch_products_blocking(api_base_url, checkout_api_key)?;
+    let categories = fetch_categories_blocking(api_base_url, checkout_api_key)?;
     let checkout_session = connect_session(
         api_base_url,
-        counter_id,
-        counter_password,
-        client_id,
+        checkout_api_key,
         cameras,
         camera_discovery_succeeded,
     )?;
@@ -1444,82 +1235,70 @@ fn check_backend_health(api_base_url: &str) -> Result<(), String> {
 
 fn connect_session(
     api_base_url: &str,
-    counter_id: &str,
-    counter_password: &str,
-    client_id: &str,
+    checkout_api_key: &str,
     cameras: &[CameraOption],
     camera_discovery_succeeded: bool,
 ) -> Result<CheckoutSession, String> {
     let client = reqwest::blocking::Client::new();
     let payload = ConnectPayload {
-        counter_id: counter_id.to_string(),
-        password: counter_password.to_string(),
-        client_id: client_id.to_string(),
         available_cameras: cameras.to_vec(),
         camera_discovery_succeeded,
     };
 
-    client
-        .post(connect_session_url(api_base_url))
-        .json(&payload)
-        .send()
-        .map_err(|error| format!("Failed to connect checkout session: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Failed to connect checkout session: {error}"))?
-        .json::<CheckoutSession>()
-        .map_err(|error| format!("Failed to decode checkout session: {error}"))
+    api_request(
+        client.post(connect_session_url(api_base_url)),
+        checkout_api_key,
+    )?
+    .json(&payload)
+    .send()
+    .map_err(|error| format!("Failed to connect checkout session: {error}"))?
+    .error_for_status()
+    .map_err(|error| format!("Failed to connect checkout session: {error}"))?
+    .json::<CheckoutSession>()
+    .map_err(|error| format!("Failed to decode checkout session: {error}"))
 }
 
 async fn sync_cart(
     api_base_url: String,
-    counter_id: String,
-    counter_password: String,
-    client_id: String,
+    checkout_api_key: String,
     session_id: String,
     cart: Vec<CartItem>,
 ) -> Result<CheckoutSession, String> {
     let client = reqwest::blocking::Client::new();
-    let payload = SyncCartPayload {
-        counter_id,
-        password: counter_password,
-        client_id,
-        cart,
-    };
+    let payload = SyncCartPayload { cart };
 
-    client
-        .put(session_cart_url(&api_base_url, &session_id))
-        .json(&payload)
-        .send()
-        .map_err(|error| format!("Failed to sync cart: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Failed to sync cart: {error}"))?
-        .json::<CheckoutSession>()
-        .map_err(|error| format!("Failed to decode checkout session: {error}"))
+    api_request(
+        client.put(session_cart_url(&api_base_url, &session_id)),
+        &checkout_api_key,
+    )?
+    .json(&payload)
+    .send()
+    .map_err(|error| format!("Failed to sync cart: {error}"))?
+    .error_for_status()
+    .map_err(|error| format!("Failed to sync cart: {error}"))?
+    .json::<CheckoutSession>()
+    .map_err(|error| format!("Failed to decode checkout session: {error}"))
 }
 
 async fn complete_payment(
     api_base_url: String,
-    counter_id: String,
-    counter_password: String,
-    client_id: String,
+    checkout_api_key: String,
     session_id: String,
 ) -> Result<CheckoutSession, String> {
     let client = reqwest::blocking::Client::new();
-    let payload = PaymentPayload {
-        counter_id,
-        password: counter_password,
-        client_id,
-    };
+    let payload = PaymentPayload {};
 
-    client
-        .post(session_payment_url(&api_base_url, &session_id))
-        .json(&payload)
-        .send()
-        .map_err(|error| format!("Failed to complete payment: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Failed to complete payment: {error}"))?
-        .json::<CheckoutSession>()
-        .map_err(|error| format!("Failed to decode payment response: {error}"))
+    api_request(
+        client.post(session_payment_url(&api_base_url, &session_id)),
+        &checkout_api_key,
+    )?
+    .json(&payload)
+    .send()
+    .map_err(|error| format!("Failed to complete payment: {error}"))?
+    .error_for_status()
+    .map_err(|error| format!("Failed to complete payment: {error}"))?
+    .json::<CheckoutSession>()
+    .map_err(|error| format!("Failed to decode payment response: {error}"))
 }
 
 fn api_client() -> Result<reqwest::blocking::Client, String> {
@@ -1531,23 +1310,24 @@ fn api_client() -> Result<reqwest::blocking::Client, String> {
 
 fn api_request(
     request: reqwest::blocking::RequestBuilder,
-    variable: &str,
+    api_key: &str,
 ) -> Result<reqwest::blocking::RequestBuilder, String> {
-    let token =
-        std::env::var(variable).map_err(|_| format!("Configure {variable} to access the API"))?;
-    if token.trim().is_empty() {
-        return Err(format!("Configure {variable} to access the API"));
+    if api_key.trim().is_empty() {
+        return Err("Configure CHECKOUT_API_KEY to access the API".to_string());
     }
-    let mut header = reqwest::header::HeaderValue::from_str(token.trim())
-        .map_err(|_| format!("Invalid {variable} configuration"))?;
+    let mut header = reqwest::header::HeaderValue::from_str(api_key.trim())
+        .map_err(|_| "Invalid CHECKOUT_API_KEY configuration".to_string())?;
     header.set_sensitive(true);
     Ok(request.header("X-API-Key", header))
 }
 
-fn fetch_products_blocking(api_base_url: &str) -> Result<Vec<Product>, String> {
+fn fetch_products_blocking(
+    api_base_url: &str,
+    checkout_api_key: &str,
+) -> Result<Vec<Product>, String> {
     api_request(
         api_client()?.get(products_url(api_base_url)),
-        "BACKEND_API_KEY",
+        checkout_api_key,
     )?
     .send()
     .map_err(|error| format!("Failed to fetch products: {error}"))?
@@ -1558,10 +1338,13 @@ fn fetch_products_blocking(api_base_url: &str) -> Result<Vec<Product>, String> {
     .map_err(|error| format!("Failed to decode products: {error}"))
 }
 
-fn fetch_categories_blocking(api_base_url: &str) -> Result<Vec<Category>, String> {
+fn fetch_categories_blocking(
+    api_base_url: &str,
+    checkout_api_key: &str,
+) -> Result<Vec<Category>, String> {
     api_request(
         api_client()?.get(categories_url(api_base_url)),
-        "BACKEND_API_KEY",
+        checkout_api_key,
     )?
     .send()
     .map_err(|error| format!("Failed to fetch categories: {error}"))?
@@ -1596,6 +1379,7 @@ async fn fetch_image(image_url: String) -> Result<ProductImage, String> {
 
 async fn upload_snapshot(
     url: String,
+    checkout_api_key: String,
     snapshot_result: Result<CapturedFrame, String>,
     capture_index: usize,
     product_id: Option<String>,
@@ -1619,7 +1403,7 @@ async fn upload_snapshot(
         form = form.text("product_name", product_name);
     }
 
-    api_request(api_client()?.post(url), "ML_API_KEY")?
+    api_request(api_client()?.post(url), &checkout_api_key)?
         .multipart(form)
         .send()
         .map_err(|error| format!("Failed to upload snapshot: {error}"))?
@@ -1636,6 +1420,7 @@ struct PredictionPublic {
 
 async fn classify_product(
     ml_api_base_url: String,
+    checkout_api_key: String,
     snapshot_result: Result<CapturedFrame, String>,
 ) -> Result<Vec<(String, f64)>, String> {
     let frame = snapshot_result.map_err(|e| format!("Camera capture failed: {e}"))?;
@@ -1648,7 +1433,7 @@ async fn classify_product(
 
     let prediction = api_request(
         api_client()?.post(ml_classify_url(&ml_api_base_url)),
-        "ML_API_KEY",
+        &checkout_api_key,
     )?
     .multipart(form)
     .send()
@@ -1754,114 +1539,6 @@ fn ml_scale_snapshots_url(api_base_url: &str, session_id: &str) -> String {
     )
 }
 
-fn load_or_create_client_id() -> String {
-    let path = client_id_path();
-    if let Ok(value) = fs::read_to_string(&path) {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-
-    let client_id = Uuid::new_v4().to_string();
-    let _ = fs::write(path, &client_id);
-    client_id
-}
-
-fn client_id_path() -> PathBuf {
-    env::var("CLIENT_ID_STORAGE_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(".self-checkout-client-id"))
-}
-
-fn camera_preview_task(state: &SelfCheckout) -> Task<Message> {
-    let shelf_handle = state
-        .shelf_camera_worker
-        .as_ref()
-        .map(|w| w.shared_handle());
-    let scale_handle = state
-        .scale_camera_worker
-        .as_ref()
-        .map(|w| w.shared_handle());
-
-    Task::perform(
-        fetch_preview_frames(shelf_handle, scale_handle),
-        Message::CameraPreviewTick,
-    )
-}
-
-async fn fetch_preview_frames(
-    shelf: Option<SharedCameraHandle>,
-    scale: Option<SharedCameraHandle>,
-) -> PreviewFrames {
-    thread::sleep(Duration::from_millis(200));
-
-    PreviewFrames {
-        shelf: shelf.map(|h| {
-            let frame = h.latest_frame()?;
-            decode_preview_handle(&frame.bytes)
-        }),
-        scale: scale.map(|h| {
-            let frame = h.latest_frame()?;
-            decode_preview_handle(&frame.bytes)
-        }),
-    }
-}
-
-/// Decode image bytes, resize to small preview, and return as RGBA handle.
-fn decode_preview_handle(bytes: &[u8]) -> Result<image::Handle, String> {
-    let img = ::image::load_from_memory(bytes)
-        .map_err(|e| format!("Failed to decode camera frame: {e}"))?;
-
-    // Resize to preview dimensions to minimize GPU texture churn
-    let preview = img.thumbnail(320, 240);
-    let rgba = preview.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    Ok(image::Handle::from_rgba(w, h, rgba.into_raw()))
-}
-
-fn push_settings_task(state: &SelfCheckout) -> Task<Message> {
-    if state.counter_id.is_empty() || state.counter_password.is_empty() {
-        return Task::none();
-    }
-    let settings = settings_from_state(
-        state.ml_mode,
-        state.selected_shelf_camera.as_ref(),
-        state.selected_scale_camera.as_ref(),
-        &state.current_language,
-    );
-    let payload = build_settings_payload(
-        state.counter_id.clone(),
-        state.counter_password.clone(),
-        &settings,
-    );
-    Task::perform(
-        push_settings(state.api_base_url.clone(), payload),
-        Message::SettingsPushed,
-    )
-}
-
-async fn push_settings(
-    api_base_url: String,
-    payload: CounterSettingsUpdatePayload,
-) -> Result<(), String> {
-    reqwest::blocking::Client::new()
-        .put(counter_self_settings_url(&api_base_url))
-        .json(&payload)
-        .send()
-        .map_err(|error| format!("Failed to push settings: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("Failed to push settings: {error}"))?;
-    Ok(())
-}
-
-fn counter_self_settings_url(api_base_url: &str) -> String {
-    format!(
-        "{}/checkout-counters/me/settings",
-        api_v1_base(api_base_url)
-    )
-}
-
 fn apply_counter_settings(state: &mut SelfCheckout, session: &CheckoutSession) {
     let settings = &session.counter_settings;
 
@@ -1884,7 +1561,6 @@ fn apply_counter_settings(state: &mut SelfCheckout, session: &CheckoutSession) {
             .map(|camera| &camera.device_id)
     {
         state.shelf_camera_worker = None;
-        state.shelf_preview_handle = None;
     }
     if state
         .selected_scale_camera
@@ -1895,7 +1571,6 @@ fn apply_counter_settings(state: &mut SelfCheckout, session: &CheckoutSession) {
             .map(|camera| &camera.device_id)
     {
         state.scale_camera_worker = None;
-        state.scale_preview_handle = None;
     }
 
     state.selected_shelf_camera = selected_shelf_camera;
@@ -1926,6 +1601,22 @@ fn apply_counter_settings(state: &mut SelfCheckout, session: &CheckoutSession) {
     {
         state.scale_camera_worker = Some(CameraWorker::start_nonblocking(camera));
         state.scale_camera_error.clear();
+    }
+}
+
+fn find_camera<'a>(
+    device_id: Option<&str>,
+    cameras: &'a [CameraOption],
+) -> Option<&'a CameraOption> {
+    let id = device_id?;
+    cameras.iter().find(|camera| camera.device_id == id)
+}
+
+fn ml_mode_from_str(value: &str) -> MlMode {
+    match value {
+        "on" => MlMode::On,
+        "label" => MlMode::Label,
+        _ => MlMode::Off,
     }
 }
 
