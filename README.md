@@ -15,6 +15,9 @@ by the connected client. A new checkout session snapshots those settings, so
 an admin edit made during an active session takes effect from the next session.
 The admin configures those settings. The client only reports its detected
 camera inventory and applies the settings snapshot returned with a session.
+The session language is also sent when fetching products and categories, so
+catalog names use the same language as the checkout UI. If a translation is
+missing, the backend returns the available one.
 
 **ML_off** — no camera or ML service required.
 The operator places a product on the scale, selects it from the list manually, and removes it. Basic checkout flow.

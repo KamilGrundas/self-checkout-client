@@ -1209,14 +1209,15 @@ fn try_connect(
     camera_discovery_succeeded: bool,
 ) -> Result<(Vec<Product>, Vec<Category>, CheckoutSession), String> {
     check_backend_health(api_base_url)?;
-    let products = fetch_products_blocking(api_base_url, checkout_api_key)?;
-    let categories = fetch_categories_blocking(api_base_url, checkout_api_key)?;
     let checkout_session = connect_session(
         api_base_url,
         checkout_api_key,
         cameras,
         camera_discovery_succeeded,
     )?;
+    let language = catalog_language(&checkout_session.counter_settings.language);
+    let products = fetch_products_blocking(api_base_url, checkout_api_key, language)?;
+    let categories = fetch_categories_blocking(api_base_url, checkout_api_key, language)?;
     Ok((products, categories, checkout_session))
 }
 
@@ -1324,9 +1325,10 @@ fn api_request(
 fn fetch_products_blocking(
     api_base_url: &str,
     checkout_api_key: &str,
+    language: &str,
 ) -> Result<Vec<Product>, String> {
     api_request(
-        api_client()?.get(products_url(api_base_url)),
+        api_client()?.get(products_url(api_base_url, language)),
         checkout_api_key,
     )?
     .send()
@@ -1341,9 +1343,10 @@ fn fetch_products_blocking(
 fn fetch_categories_blocking(
     api_base_url: &str,
     checkout_api_key: &str,
+    language: &str,
 ) -> Result<Vec<Category>, String> {
     api_request(
-        api_client()?.get(categories_url(api_base_url)),
+        api_client()?.get(categories_url(api_base_url, language)),
         checkout_api_key,
     )?
     .send()
@@ -1473,8 +1476,18 @@ fn api_v1_base(api_base_url: &str) -> String {
     }
 }
 
-fn products_url(api_base_url: &str) -> String {
-    format!("{}/products/", api_v1_base(api_base_url))
+fn products_url(api_base_url: &str, language: &str) -> String {
+    format!(
+        "{}/products/?language={language}",
+        api_v1_base(api_base_url)
+    )
+}
+
+fn catalog_language(language: &str) -> &str {
+    match language {
+        "pl" => "pl",
+        _ => "en",
+    }
 }
 
 fn resolve_product_image_url(api_base_url: &str, image_url: &str) -> String {
@@ -1493,8 +1506,11 @@ fn resolve_product_image_url(api_base_url: &str, image_url: &str) -> String {
     format!("{api_origin}{}", &image_url[path_start..])
 }
 
-fn categories_url(api_base_url: &str) -> String {
-    format!("{}/categories/", api_v1_base(api_base_url))
+fn categories_url(api_base_url: &str, language: &str) -> String {
+    format!(
+        "{}/categories/?language={language}",
+        api_v1_base(api_base_url)
+    )
 }
 
 fn health_url(api_base_url: &str) -> String {
@@ -1629,7 +1645,20 @@ fn session_payment_url(api_base_url: &str, session_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_product_image_url;
+    use super::{catalog_language, categories_url, products_url, resolve_product_image_url};
+
+    #[test]
+    fn catalog_urls_use_the_selected_language() {
+        assert_eq!(
+            products_url("http://127.0.0.1:8000", "pl"),
+            "http://127.0.0.1:8000/api/v1/products/?language=pl"
+        );
+        assert_eq!(
+            categories_url("http://127.0.0.1:8000/api/v1", "en"),
+            "http://127.0.0.1:8000/api/v1/categories/?language=en"
+        );
+        assert_eq!(catalog_language("unexpected"), "en");
+    }
 
     #[test]
     fn routes_backend_product_images_through_the_configured_api_origin() {
